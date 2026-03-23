@@ -154,7 +154,7 @@ var user = {
   },
   img_out: function (str) { abc_images += str; },
   anno_stop: function (type, start, stop, x, y, w, h, s) {
-    if (['beam', 'slur', 'tuplet'].indexOf(type) >= 0) return;
+    if (['note', 'rest', 'grace'].indexOf(type) < 0) return;
     syms[start] = s;
     abc_obj.out_svg('<rect class="abcr _' + start + '_" x="');
     abc_obj.out_sxsy(x, '" y="', y);
@@ -304,9 +304,10 @@ function onLeftClick(evt) {
     play.loop = (loopMode !== 0); play.repv = 0; play.stopAt = 0; loopCount = 0;
     playStart(si, ei);
   } else {
-    // 點到空白：若有暫停位置則繼續，否則從頭播放
+    // 點到空白或歌詞：若有暫停位置則繼續，否則從上次位置播放
     if (play.stopAt > 0) {
       si = get_se(play.stopAt); ei = play.ei; play.stopAt = 0;
+      // 繼續播放：保留 loopCount，不重置循環次數
       playStart(si, ei);
     } else {
       si = play.si || first_sym(); ei = play.ei || null;
@@ -406,8 +407,12 @@ function showCtxMenu(x, y) {
       } else if (play.stopAt > 0) {
         if (!play.abcplay) return;
         addTunes();
-        var si = get_se(play.stopAt), ei = play.ei;
-        play.stopAt = 0; playStart(si, ei);
+        var si = get_se(play.stopAt);
+        var ei = play.ei;
+        play.stopAt = 0;
+        if (!si) return;
+        // 繼續播放：保留 loopCount，不重置循環次數
+        playStart(si, ei);
       } else {
         if (!play.abcplay) return;
         addTunes();
@@ -513,8 +518,12 @@ function endplay(repv) {
     }
   }
   if (shouldLoop) { updateStatus(); play.abcplay.play(play.si, play.ei); return; }
-  play.playing = play.stopping = play.loop = false;
-  play.repv = repv; loopCount = 0;
+  play.playing = play.loop = false;
+  // 暫停（stopping）時保留 loopCount，讓繼續播放時次數不重來
+  // 只有真正播完才重置 loopCount
+  if (!play.stopping) loopCount = 0;
+  play.stopping = false;
+  play.repv = repv;
   selx_sav[0] = selx[0]; selx_sav[1] = selx[1];
   play.anchorIdx = selx[0];
   updateStatus();
@@ -533,7 +542,10 @@ function play_tune(what) {
 
   if (what === 3) {
     if (play.stopAt <= 0) return;
-    si = get_se(play.stopAt); ei = play.ei; play.stopAt = 0;
+    si = get_se(play.stopAt);
+    ei = play.ei; play.stopAt = 0;
+    if (!si) return;
+    // 繼續播放：保留 loopCount，不重置循環次數
     playStart(si, ei); return;
   }
 
