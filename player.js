@@ -367,8 +367,8 @@ function showCtxMenu(x, y) {
 
   function refreshToggleLabel() {
     if (play.playing) {
-      segToggle.textContent = loopMode === 0 ? '➔' : '⭯';
-      segToggle.title       = loopMode === 0 ? '點擊開啟循環' : '點擊關閉循環';
+      segToggle.textContent = loopMode === 0 ? '➔' : '↺';
+      segToggle.title       = loopMode === 0 ? '開啟循環' : '關閉循環';
     } else if (play.stopAt > 0) {
       segToggle.textContent = '➔'; segToggle.title = '繼續播放';
     } else {
@@ -473,15 +473,15 @@ function setsel(idx, v) {
 // ══════════════════════════════════════════
 function loopLabel() {
   if (loopMode === 0)  return '';
-  if (loopMode === 99) return ' ⭯ ∞';
-  return ' ⭯ ' + (loopCount + 1) + '/' + (Number(document.getElementById('loop-n-input').value) || loopMode);
+  if (loopMode === 99) return '  ↺∞';
+  return ' ↺ ' + (loopCount + 1) + '/' + (Number(document.getElementById('loop-n-input').value) || loopMode);
 }
 
 function updateStatus() {
   var s;
-  if (play.playing)         s = '▶ 播放中' + loopLabel() + '… (左鍵停止)';
-  else if (play.stopAt > 0) s = '已暫停，左鍵空白處或 ➔ 繼續；右鍵選單可選段';
-  else                      s = '左鍵點音符從該處播放，點空白處從上次位置播放；右鍵選段';
+  if (play.playing)         s = '▶ 播放中' + loopLabel() + '…';
+  else if (play.stopAt > 0) s = '已暫停';
+  else                      s = '點擊播放';
   document.getElementById('status').textContent = s;
 }
 
