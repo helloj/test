@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body>
+<script src="../abc2svg/abc2svg_files/abc2svg-1.js"></script>
+<script src="../abc2svg/abc2svg_files/snd-1.js"></script>
+<script src="./loader.js"></script>
+
+<!-- ═══════════════════════════════════════════════════
+     等級 0：無跳轉（基準線）
+════════════════════════════════════════════════════ -->
+
+<div class="tune-block">
+<p>T00 — 純直線播放
+預期：按順序播放 8 個音，共 2 小節，結束。</p>
+<script type="text/vnd.abc">
+X:0
+T:T00 直線（無跳轉）
+M:4/4
+L:1/4
+Q:1/4=120
+K:C
+C D E F | G A B c |]
+</script>
+</div>
+
+<!-- ═══ 等級 1：D.C. ═══ -->
+
+<div class="tune-block">
+<p>T01 — D.C. 最簡形式
+預期播放順序：
+  C D E F → G A B c → z（D.C.）
+  跳回開頭：C D E F → G A B c → 結束（第二次不重複跳轉）</p>
+<script type="text/vnd.abc">
+X:1
+T:T01 D.C.
+M:4/4
+L:1/4
+Q:1/4=120
+K:C
+C D E F | G A B c | !D.C.!z4 |]
+</script>
+</div>
+
+<div class="tune-block">
+<p>T02 — D.C. al Fine
+預期播放順序：
+  C D E F → G A B c（!fine! 在此小節開頭）→ z（D.C.）
+  跳回頭：C D E F → 到 !fine! 位置停止</p>
+<script type="text/vnd.abc">
+X:2
+T:T02 D.C. al Fine
+M:4/4
+L:1/4
+Q:1/4=120
+K:C
+C D E F | !fine! G A B c | !D.C.!z4 |]
+</script>
+</div>
+
+<!-- ═══ 等級 2：D.S. ═══ -->
+
+<div class="tune-block">
+<p>T03 — D.S. 最簡形式
+預期播放順序：
+  C D E F → G A B c（!segno!）→ E F G A → z（D.S.）
+  跳到 !segno!：G A B c → E F G A → 結束（第二次不再跳）</p>
+<script type="text/vnd.abc">
+X:3
+T:T03 D.S.
+M:4/4
+L:1/4
+Q:1/4=120
+K:C
+C D E F | !segno! G A B c | E F G A | !D.S.!z4 |]
+</script>
+</div>
+
+<div class="tune-block">
+<p>T04 — D.S. al Fine
+預期播放順序：
+  C D E F → G A B c（!segno! 在頭，!fine! 在 B 前）→ E F G A → z（D.S.）
+  跳到 !segno!：G A → 到 !fine! 位置停止</p>
+<script type="text/vnd.abc">
+X:4
+T:T04 D.S. al Fine
+M:4/4
+L:1/4
+Q:1/4=120
+K:C
+C D E F | !segno! G A !fine! B c | E F G A | !D.S.!z4 |]
+</script>
+</div>
+
+<!-- ═══ 等級 3：al Coda ═══ -->
+
+<div class="tune-block">
+<p>T05 — D.C. al Coda（最常見形式）
+預期播放順序：
+  C D E F → G A B c → z（D.C. al Coda，跳回頭）
+  C D E F → G A B c → 遇到 !coda! 分歧點跳出
+  !coda!：e f g a → 結束</p>
+<script type="text/vnd.abc">
+X:5
+T:T05 D.C. al Coda
+M:4/4
+L:1/4
+Q:1/4=120
+K:C
+C D E F | G A B c | !D.C.alcoda! cccc | !coda! e f g a |]
+</script>
+</div>
+
+<div class="tune-block">
+<p>T06 — D.S. al Coda（標準歌曲結構）
+預期播放順序：
+  C D E F → G A B c（!segno!）→ E F G A → z（D.S. al Coda）
+  跳到 !segno!：G A B c → E F G A → coda 分歧點跳出
+  !coda!：e f g a → 結束</p>
+<script type="text/vnd.abc">
+X:6
+T:T06 D.S. al Coda
+M:4/4
+L:1/4
+Q:1/4=120
+K:C
+C D E F | !segno! G A B c | E F G A | !D.S.alcoda! z4 | !coda! e f g a |]
+</script>
+</div>
+
+<!-- ═══ 等級 4：反覆 + D.S. ═══ -->
+
+<div class="tune-block">
+<p>T07 — 一段反覆後接 D.S. al Coda
+預期播放順序：
+  C D E F → G A B c（房 1）
+  C D E F → G A B G（房 2）
+  e d c B（!segno!）→ A B c d → z（D.S. al Coda）
+  跳到 !segno!：e d c B → A B c d → 分歧點跳出
+  !coda!：G A B c → 結束</p>
+<script type="text/vnd.abc">
+X:7
+T:T07 反覆 + D.S. al Coda
+M:4/4
+L:1/4
+Q:1/4=120
+K:C
+|: C D E F |1 G A B c :|2 G A B G | !segno! e d c B |
+A B c d | !D.S.alcoda! z4 | !coda! G A B c |]
+</script>
+</div>
+
+<!-- ═══ 等級 5：邊界情況 ═══ -->
+
+<div class="tune-block">
+<p>T08 — !segno! 在第一小節開頭（等同 D.C.）
+預期：與 T01 D.C. 行為相同——跳回曲首（因為 !segno! 就在第一個音符上）。</p>
+<script type="text/vnd.abc">
+X:8
+T:T08 segno 在開頭
+M:4/4
+L:1/4
+Q:1/4=120
+K:C
+!segno! C D E F | G A B c | !D.S.!z4 |]
+</script>
+</div>
+
+<div class="tune-block">
+<p>T09 — 多聲部 D.S. al Coda
+預期：兩個聲部同步跳轉，coda 段兩聲部均正確播出。</p>
+<script type="text/vnd.abc">
+X:9
+T:T09 多聲部 D.S. al Coda
+M:4/4
+L:1/4
+Q:1/4=100
+K:C
+V:1
+!segno! C E G c | D F A d | !D.S.alcoda! z4 | !coda! c B A G |]
+V:2
+!segno! E, G, C E | F, A, D F | !D.S.alcoda! z4 | !coda! G F E D |]
+</script>
+</div>
+
+<div class="tune-block">
+<p>T10 — !coda! 緊接在 !D.S.alcoda! 後（零距離 coda）
+預期：
+  C D E F → G A B c → 遇到 D.S. al Coda
+  跳到 !segno!：C D E F → G A B c → 到達 coda 分歧點
+  進入 coda：e f g a → 結束</p>
+<script type="text/vnd.abc">
+X:10
+T:T10 D.S.alcoda 後立即 coda
+M:4/4
+L:1/4
+Q:1/4=120
+K:C
+!segno! C D E F | G A B c | !D.S.alcoda! !coda! e f g a |]
+</script>
+</div>
+
+<!-- ═══ 等級 6：兩個 coda ═══ -->
+
+<div class="tune-block">
+<p>T11 — 分歧點 coda 與降落點 coda 分開標記
+預期播放順序：
+  C D E F → G A（!segno!）→ B c（第一個 !coda! 在 B 前）
+  E F G A → z（D.S. al Coda）
+  跳到 !segno!：G A → 遇到第一個 !coda!（分歧點）跳出
+  進入第二個 !coda!（降落點）：e f g a → 結束</p>
+<script type="text/vnd.abc">
+X:11
+T:T11 兩個 coda（分歧點 + 降落點）
+M:4/4
+L:1/4
+Q:1/4=120
+K:C
+C D E F | !segno! G A !coda! B c | E F G A | !D.S.alcoda! z4 | !coda! e f g a |]
+</script>
+</div>
+
+<!-- ═══ 等級 7：複合結構 ═══ -->
+
+<div class="tune-block">
+<p>T12 — 兩個O＋反覆＋fine
+結構：!segno! 在中段，第一個 O 在 [1 之前當分歧點，
+第二個 O 與 !D.S.! 在同一音符（降落點），最後有 !fine!</p>
+<script type="text/vnd.abc">
+X:12
+T:T12 兩個O＋反覆＋fine
+M:4/4
+L:1/4
+Q:1/4=120
+K:C
+|: C D !segno! E F O |1 G A B :|2 G A B G |
+e d c B | A B c d | E F !D.S.! O | G A B c | !fine! z4 |]
+</script>
+</div>
+
+<!-- ═══ 等級 8：多重反覆 ═══ -->
+
+<div class="tune-block">
+<p>T13 — multiple repeat（[1-3 / [4,5 / ["last time"]）
+預期播放順序：
+  [段落 A] C D E F | G F E D 反覆 2 次（房1：C2 G2；房2：C2 C2）
+  [段落 B] c3 z（直線過門）
+  [段落 C] C D E F 反覆 6 次：
+    第 1–3 次接房 1-3（c d e f）
+    第 4–5 次接房 4,5（C2 G2）
+    第 6 次接房 "last time"（C G C z）→ 結束</p>
+<script type="text/vnd.abc">
+X:13
+T:T13 multiple repeat
+M:4/4
+L:1/4
+Q:1/1=80
+K:C
+|: C D E F | G F E D |[1 C2 G2 :|2 C2 C2 || c3 z ||
+|: C D E F |1-3 c d e f :|4,5 C2 G2 :|["last time" C G C z |]
+</script>
+</div>
+
+<!-- ═══ 等級 9：特殊小節線 ═══ -->
+
+<div class="tune-block">
+<p>T14 — triple repeat（各種非標準小節線綜合壓力測試）
+預期：不崩潰、不無限循環；各段反覆次數依小節線冒號數決定
+（:: 重複 2 次，:::| 重複 3 次）。</p>
+<script type="text/vnd.abc">
+X:14
+T:T14 triple repeat
+M:4/4
+L:1/4
+Q:1/1=80
+K:C
+CDEF | GFED [| CDEF |: GFED :|
+CDEF :: GFED || CDEF [|] GFED
+CDEF |[| GFED :::|] CDEF : GFED |]
+</script>
+</div>
+
+</body>
+</html>
