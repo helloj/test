@@ -93,16 +93,23 @@ var CFG = {
   style.textContent = [
     "/* player.css – abc2svg Player 樣式 */",
     "*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}",
-    ":root{--ink:#1a120b;--paper:#f5efe6;--accent:#8b3a3a;--muted:#c2a97a;--panel:rgba(245,239,230,0.96)}",
+    ":root{--ink:#1a120b;--paper:#f5efe6;--accent:#8b3a3a;--muted:#c2a97a;--panel:rgba(245,239,230,0.66)}",
     "html,body{height:100%;background:var(--paper);color:var(--ink);font-family:'Noto Serif TC','Kaiti TC','STKaiti',serif}",
-    "body{padding-right:56px}",
-    "#fab-toolbar{position:fixed;top:16px;right:16px;z-index:50;display:flex;flex-direction:column;align-items:stretch;gap:6px;background:var(--panel);border:1px solid var(--muted);border-radius:8px;padding:8px 6px;box-shadow:0 4px 16px rgba(139,58,58,0.15);user-select:none}",
-    ".fab-divider{height:1px;background:var(--muted);opacity:.4;margin:2px 0}",
+    // ── fab-toolbar：水平浮動，固定在右上角 ──
+    "#fab-toolbar{position:fixed;top:16px;right:100px;z-index:50;display:flex;flex-direction:row;align-items:center;gap:6px;background:var(--panel);border:1px solid var(--muted);border-radius:8px;padding:6px 8px;box-shadow:0 4px 16px rgba(139,58,58,0.15);user-select:none}",
+    ".fab-divider{width:1px;height:1.8em;background:var(--muted);opacity:.4;margin:0 2px}",
     "#play-pause-btn{display:flex;align-items:center;justify-content:center;width:2.4em;height:2.4em;border:1px solid var(--muted);border-radius:4px;background:transparent;color:var(--muted);font-size:.85rem;cursor:pointer;transition:background .12s,color .12s;line-height:1;padding:0;font-family:inherit}",
     "#play-pause-btn:hover{background:rgba(139,58,58,0.10);color:var(--ink)}",
-    "#loop-icon{justify-content:center}",
-    ".seg-btn{display:flex;flex-direction:column;border:1px solid var(--muted);border-radius:4px;overflow:hidden;cursor:pointer}",
-    ".seg-btn .seg{display:flex;align-items:center;justify-content:center;padding:5px 4px;font-size:.7rem;font-family:inherit;background:transparent;color:var(--muted);transition:background .12s,color .12s;white-space:nowrap;cursor:pointer}",
+    // ── loopSegBtn：只顯示 loop-icon 這一顆按鈕 ──
+    "#loopSegBtn{position:relative;display:flex;align-items:center}",
+    "#loop-icon{display:flex;align-items:center;justify-content:center;width:2.4em;height:2.4em;border:1px solid var(--muted);border-radius:4px;background:transparent;color:var(--muted);font-size:.85rem;cursor:pointer;transition:background .12s,color .12s;line-height:1;padding:0;font-family:inherit;white-space:nowrap}",
+    "#loop-icon:hover{background:rgba(139,58,58,0.10);color:var(--ink)}",
+    "#loop-icon.active{background:rgba(139,58,58,0.15);color:var(--ink)}",
+    // ── loop-popup：下拉浮層，預設隱藏 ──
+    "#loop-popup{position:absolute;top:calc(100% + 6px);left:50%;transform:translateX(-50%);z-index:100;display:none;flex-direction:column;background:var(--panel);border:1px solid var(--muted);border-radius:6px;box-shadow:0 4px 16px rgba(139,58,58,0.18);overflow:hidden;min-width:2.8em}",
+    "#loop-popup.open{display:flex}",
+    ".seg-btn{display:flex;flex-direction:column;cursor:pointer}",
+    ".seg-btn .seg{display:flex;align-items:center;justify-content:center;padding:7px 6px;font-size:.7rem;font-family:inherit;background:transparent;color:var(--muted);transition:background .12s,color .12s;white-space:nowrap;cursor:pointer}",
     ".seg-btn .seg:not(:last-child){border-bottom:1px solid var(--muted)}",
     ".seg-btn .seg:hover{background:rgba(139,58,58,0.10);color:var(--ink)}",
     ".seg-btn .seg.active{background:var(--accent);color:#fff;font-weight:600}",
@@ -123,7 +130,7 @@ var CFG = {
     "#errbanner{display:none;background:#c0392b;color:#fff;padding:6px 16px;font-size:.82rem;cursor:pointer}",
     ".tune-block{border:1px solid #ccc;border-radius:6px;margin:16px auto;max-width:85%;padding:12px 16px 0;background:#fffdf8}",
     ".tune-block p{margin:0 0 6px;font-size:.88rem;color:#444;white-space:pre-wrap;font-family:monospace}",
-    ".tune-svg svg,.tune-block svg{display:block;width:100%;height:auto}",
+    ".tune-block svg{display:block;width:100%;height:auto}",
     // ── 調速面板 ──────────────────────────────────────────────────
     // 仿 YouTube 風格：底部留白、左右留白、圓角上緣、置中內容區
     "#speed-panel{position:fixed;bottom:0;left:0;right:0;z-index:300;display:flex;justify-content:center;pointer-events:none;transform:translateY(100%);transition:transform .22s cubic-bezier(.4,0,.2,1)}",
@@ -167,12 +174,17 @@ var CFG = {
     '<div id="fab-toolbar">',
     '  <button id="play-pause-btn">' + CFG.ICON_PLAY + '</button>',
     '  <div class="fab-divider"></div>',
-    '  <div class="seg-btn" id="loopSegBtn">',
-    '    <span class="seg" id="loop-icon" data-val="loop">' + CFG.ICON_NOLOOP + '</span>',
-    '    <span class="seg" data-val="' + CFG.LOOP_DEFAULT + '" id="seg-n">',
-    '      <input id="loop-n-input" type="number" min="1" max="' + CFG.LOOP_INFINITE + '" value="' + CFG.LOOP_DEFAULT + '"/>',
-    '    </span>',
-    '    <span class="seg" data-val="' + CFG.LOOP_INFINITE + '">' + CFG.ICON_INFINITE + '</span>',
+    // loopSegBtn 只顯示 loop-icon；seg-n / seg-infinite 收進 loop-popup 浮層
+    '  <div id="loopSegBtn">',
+    '    <span id="loop-icon">' + CFG.ICON_NOLOOP + '</span>',
+    '    <div id="loop-popup">',
+    '      <div class="seg-btn">',
+    '        <span class="seg" data-val="' + CFG.LOOP_DEFAULT + '" id="seg-n">',
+    '          <input id="loop-n-input" type="number" min="1" max="' + CFG.LOOP_INFINITE + '" value="' + CFG.LOOP_DEFAULT + '"/>',
+    '        </span>',
+    '        <span class="seg" data-val="' + CFG.LOOP_INFINITE + '" id="seg-infinite">' + CFG.ICON_INFINITE + '</span>',
+    '      </div>',
+    '    </div>',
     '  </div>',
     '  <div class="fab-divider"></div>',
     '  <button id="speed-btn">' + CFG.ICON_SPEED + '</button>',
@@ -1250,10 +1262,10 @@ function showCtxMenu(x, y) {
 // 9. 播放/暫停按鈕 + 循環開關
 // ══════════════════════════════════════════
 (function () {
-  var btn      = document.getElementById('loopSegBtn'),
-      ninput   = document.getElementById('loop-n-input'),
-      loopIcon = document.getElementById('loop-icon'),
-      ppBtn    = document.getElementById('play-pause-btn');
+  var loopPopup = document.getElementById('loop-popup'),
+      ninput    = document.getElementById('loop-n-input'),
+      loopIcon  = document.getElementById('loop-icon'),
+      ppBtn     = document.getElementById('play-pause-btn');
 
   // ── Play/Pause 按鈕顯示更新 ─────────────────────────────────────
   function refreshPlayPauseBtn() {
@@ -1289,6 +1301,15 @@ function showCtxMenu(x, y) {
   }
   _refreshToggleLabel = refreshToggleLabel;
 
+  // ── loop-popup 開關 ──────────────────────────────────────────────
+  function openPopup() {
+    loopPopup.classList.add('open');
+  }
+
+  function closePopup() {
+    loopPopup.classList.remove('open');
+  }
+
   // ── Play/Pause 按鈕 click ───────────────────────────────────────
   ppBtn.addEventListener('click', function () {
     if (play.playing) {
@@ -1312,8 +1333,7 @@ function showCtxMenu(x, y) {
     if (dv === CFG.LOOP_INFINITE) ninput.value = CFG.LOOP_INFINITE;
     play.loop = true;
     loopCount = 0;
-    btn.querySelectorAll('.seg[data-val]').forEach(function (s) {
-      if (s === loopIcon) return;
+    document.querySelectorAll('#loop-popup .seg[data-val]').forEach(function (s) {
       s.classList.toggle('active', Number(s.dataset.val) === dv);
     });
     refreshLoopIcon(); updateStatus();
@@ -1324,41 +1344,58 @@ function showCtxMenu(x, y) {
     loopMode  = 0;
     play.loop = false;
     loopCount = 0;
-    btn.querySelectorAll('.seg[data-val]').forEach(function (s) {
-      if (s === loopIcon) return;
+    document.querySelectorAll('#loop-popup .seg[data-val]').forEach(function (s) {
       s.classList.remove('active');
     });
     refreshLoopIcon(); updateStatus();
   }
 
-  // ── loopSegBtn click ────────────────────────────────────────────
-  btn.addEventListener('click', function (e) {
+  // ── loop-icon click：直接 toggle loopMode（選項 1）──────────────
+  // 若浮層已關 + loopMode=0 → 展開浮層（不 toggle）
+  // 其他情況 → 直接 toggle on/off
+  loopIcon.addEventListener('click', function (e) {
+    e.stopPropagation();
+    var isOpen = loopPopup.classList.contains('open');
+    if (!isOpen && loopMode === 0) {
+      // 浮層關閉 + 未啟用：展開讓用戶選模式
+      openPopup();
+      return;
+    }
+    // 其他情況：直接 toggle
+    if (loopMode !== 0) {
+      clearLoopMode();
+    } else {
+      var n = Number(ninput.value) || CFG.LOOP_DEFAULT;
+      setLoopMode(n === CFG.LOOP_INFINITE ? CFG.LOOP_INFINITE : CFG.LOOP_DEFAULT);
+    }
+    closePopup();
+  });
+
+  // ── loop-popup 內部 click（seg-n / seg-infinite）────────────────
+  loopPopup.addEventListener('click', function (e) {
+    e.stopPropagation();
+    // ninput 本身只啟用，不 toggle
+    if (e.target === ninput) {
+      if (!document.getElementById('seg-n').classList.contains('active'))
+        setLoopMode(CFG.LOOP_DEFAULT);
+      return;
+    }
     var sp = e.target.closest('.seg[data-val]');
     if (!sp) return;
-
-    // ── loop-icon：主開關 toggle ──────────────────────────────────
-    if (sp === loopIcon) {
-      if (loopMode !== 0) {
-        clearLoopMode();
-      } else {
-        // ninput.value 就是記憶載體：5（或使用者改過的值）/ 99
-        var n = Number(ninput.value) || CFG.LOOP_DEFAULT;
-        setLoopMode(n === CFG.LOOP_INFINITE ? CFG.LOOP_INFINITE : CFG.LOOP_DEFAULT);
-      }
-      return;
-    }
-
-    // ── seg-n / seg-infinite：點 ninput 本身只啟用不 toggle ───────
-    if (e.target === ninput) {
-      if (!sp.classList.contains('active')) setLoopMode(Number(sp.dataset.val));
-      return;
-    }
-
-    // ── seg-n / seg-infinite：toggle on/off ──────────────────────
     if (sp.classList.contains('active')) {
       clearLoopMode();
     } else {
       setLoopMode(Number(sp.dataset.val));
+    }
+    closePopup();
+  });
+
+  // ── 點 popup 外部關閉（同 speed-panel 模式）─────────────────────
+  document.addEventListener('click', function (e) {
+    if (loopPopup.classList.contains('open') &&
+        !loopPopup.contains(e.target) &&
+        e.target !== loopIcon) {
+      closePopup();
     }
   });
 
@@ -1381,6 +1418,7 @@ function showCtxMenu(x, y) {
     var n = Math.max(1, Math.min(CFG.LOOP_INFINITE, parseInt(ninput.value) || 1));
     ninput.value = n; loopMode = n; play.loop = true; loopCount = 0;
     refreshToggleLabel(); updateStatus(); ninput.blur();
+    closePopup();
   });
 }());
 
