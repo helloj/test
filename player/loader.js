@@ -70,7 +70,7 @@ var CFG = {
   ICON_RESUME:   '⏯',   // 繼續按鈕（stopAt > 0 狀態）
   ICON_LOOP:     '↺',   // 循環模式狀態指示（不可按）
   ICON_NOLOOP:   '➔',   // 非循環模式狀態指示（不可按）
-  ICON_INFINITE: '🔁︎',  // 無限循環
+  ICON_INFINITE: '♾️',  // 無限循環
   ICON_SPEED:    '๑ï',  // 調速按鈕
 
   // ── 播放速度 ─────────────────────────────
@@ -261,8 +261,8 @@ var CFG = {
  *   coda anchor 看到 _isLanding 時不執行分歧跳轉，清掉標記繼續往下播。
  *
  * 殘存排程防護（_playGeneration）：
- *   playStart() 每次遞增 _playGeneration 並寫入 po._gen。
- *   play_cont 複製版開頭檢查 po._gen，版本不符即 return，
+ *   play_cont 首次進入時遞增 _playGeneration 並寫入 po._gen。
+ *   後續 setTimeout(play_cont,...) 再進來時比對 po._gen，版本不符即 return，
  *   讓漏網的舊 setTimeout(play_cont,...) 自然熄滅，不再復活。
  * ══════════════════════════════════════════════════════════════════
  */
@@ -597,7 +597,7 @@ function _walkAnchors(s, po, ctx) {
 //   - 最小修補（instrument filter + _current_po）
 //   - 攔截點 A（播放起點預走 anchor）
 //   - play_cont 最小複製（僅加入攔截點 B，其餘與 snd-1.js 原版相同）
-//   - [GEN] 版本守衛：play_cont 開頭檢查 po._gen，過濾殘存排程
+//   - [GEN] 版本守衛：play_cont 開頭 init po._gen + 遞增 + 守衛，過濾殘存排程
 
 var orig_play_next = abc2svg.play_next;
 
@@ -613,12 +613,6 @@ abc2svg.play_next = function(po) {
     po.note_run._patched = true;
   }
   abc2svg._current_po = po;
-  // ── [GEN] 同步世代號到 po：play_next 是 play() 後第一個拿到 po 的位置 ──
-  // _playGeneration 已在 playStart() 遞增，此處確保 po._gen 與當前世代一致。
-  // 僅當 po._gen 落後時才更新（避免 loop 重播時誤蓋後續迭代的版本號）。
-  if (po._gen === undefined || po._gen < _playGeneration) {
-    po._gen = _playGeneration;
-  }
 
   // ── jumpCtx 取得 ───────────────────────────────────────────────
   if (po._jumpCtx === undefined) {
@@ -635,7 +629,8 @@ abc2svg.play_next = function(po) {
   // ── patch 說明 ────────────────────────────────────────────────
   // do_tie / set_ctrl / play_cont / get_part 直接複製自 snd-1.js 原文，
   // 不做任何修改。僅在 play_cont 的三個位置插入修補：
-  //   [GEN] play_cont 開頭：版本守衛，過濾殘存的舊世代 setTimeout
+  //   [GEN] play_cont 開頭：init po._gen + 遞增世代號 + 版本守衛，
+  //         過濾殘存的舊世代 setTimeout（集中於 play_cont，play_next 不介入）
   //   [B1]  noplay while 之後：處理播放起點本身落在 anchor 的情況
   //   [B2]  內層 while 的 s=s.ts_next 之後：中途遇到 anchor 時跳轉
   // 未來 snd-1.js 更新時，只需重新複製這四個函數，再貼回 [GEN][B1][B2] 即可。
@@ -685,8 +680,15 @@ abc2svg.play_next = function(po) {
   // ── 以下為 snd-1.js 原文（play_cont）+ [GEN][B1][B2] patch ───
   function play_cont(po){var d,i,st,m,note,g,s2,t,maxt,now,p_v,C=abc2svg.C,s=po.s_cur
 
-    // ── [GEN] 版本守衛：版本不符表示這是殘存的舊世代排程，直接丟棄 ──
+    // ── [GEN] 首次進入（po 剛建立）：init + 遞增世代號
+    //         後續 setTimeout(play_cont,...) 再進來時 po._gen 已有值，跳過遞增。
+    //         版本不符表示這是殘存的舊世代排程，直接丟棄。
+    if(po._gen === undefined){
+      po._gen = ++_playGeneration;
+    }
     if(po._gen !== _playGeneration){
+      po.timouts.forEach(function(id){ clearTimeout(id); });  // 清除已排的音符
+      po.timouts = [];
       return;
     }
     // ── [GEN] end ─────────────────────────────────────────────────
@@ -1655,8 +1657,6 @@ function playStart(si, ei) {
   if (!play.isResume) _resetAllJumpCtx();
   play.playing = true;
   play.isResume = false;
-  // ── [GEN] 遞增世代號；po._gen 的實際寫入在 play_next 內（那裡才保證拿到 po）──
-  _playGeneration++;
   updateStatus();
   if (_refreshToggleLabel) _refreshToggleLabel();
   play.abcplay.play(si, ei, play.repv);
