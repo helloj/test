@@ -93,7 +93,7 @@ var CFG = {
   style.textContent = [
     "/* player.css – abc2svg Player 樣式 */",
     "*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}",
-    ":root{--ink:#1a120b;--paper:#f5efe6;--accent:#8b3a3a;--muted:#c2a97a;--panel:rgba(245,239,230,0.66)}",
+    ":root{--ink:#1a120b;--paper:#f5efe6;--accent:#8b3a3a;--muted:#c2a97a;--panel:rgba(245,239,230,0.66);--panel-solid: rgb(245,239,230)}",
     "html,body{height:100%;background:var(--paper);color:var(--ink);font-family:'Noto Serif TC','Kaiti TC','STKaiti',serif}",
     // ── fab-toolbar：水平浮動，固定在右上角 ──
     "#fab-toolbar{position:fixed;top:16px;right:100px;z-index:50;display:flex;flex-direction:row;align-items:center;gap:6px;background:var(--panel);border:1px solid var(--muted);border-radius:8px;padding:6px 8px;box-shadow:0 4px 16px rgba(139,58,58,0.15);user-select:none}",
@@ -135,7 +135,7 @@ var CFG = {
     // 仿 YouTube 風格：底部留白、左右留白、圓角上緣、置中內容區
     "#speed-panel{position:fixed;bottom:0;left:0;right:0;z-index:300;display:flex;justify-content:center;pointer-events:none;transform:translateY(100%);transition:transform .22s cubic-bezier(.4,0,.2,1)}",
     "#speed-panel.open{transform:translateY(0)}",
-    "#speed-panel-inner{pointer-events:all;width:100%;max-width:60%;background:var(--panel);border:1px solid var(--muted);border-radius:16px 16px 0 0;box-shadow:0 -4px 24px rgba(26,18,11,0.18);padding:8px 0 0;margin:0 12px}",
+    "#speed-panel-inner{pointer-events:all;width:100%;max-width:60%;background:var(--panel-solid);border:1px solid var(--muted);border-radius:16px 16px 0 0;box-shadow:0 -4px 24px rgba(26,18,11,0.18);padding:8px 0 0;margin:0 12px}",
     // 頂部拖曳把手（仿 iOS/Android sheet）
     "#speed-handle{width:36px;height:4px;border-radius:2px;background:var(--muted);opacity:.5;margin:0 auto 16px}",
     "#speed-display{text-align:center;font-size:1.8rem;font-weight:700;color:var(--ink);margin-bottom:20px;letter-spacing:.02em}",
