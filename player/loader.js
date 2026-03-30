@@ -1,6 +1,28 @@
 /**
  * loader.js – abc2svg 播放器（多曲自包含版）
  *
+ * Copyright (C) 2024-2026 Helloj
+ *
+ * This file is part of AbcDrill
+ *
+ * AbcDrill is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * AbcDrill is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ * Based on abc2svg by Jean-Francois Moine
+ * @source: https://chiselapp.com/user/moinejf/repository/abc2svg
+ */
+
+/**
  * HTML 中只需：
  *   <script src="https://cdn.jsdelivr.net/gh/helloj/test@latest/abc2svg/abc2svg_files/abc2svg-1.js"></script>
  *   <script src="https://cdn.jsdelivr.net/gh/helloj/test@latest/abc2svg/abc2svg_files/snd-1.js"></script>
@@ -17,12 +39,16 @@
  *   1. 注入 CSS（垂直浮動工具列、ctxMenu 樣式）
  *   2. 建立 DOM 結構（#fab-toolbar、#target、ctxMenu）
  *   3. 修補 abc2svg.play_next，支援 D.C. / D.S. / Coda / Fine 跳轉
+ *      - play_cont 複製版加入 _playGeneration 版本守衛，防止殘存排程復活
  *   4. 渲染 ABC → SVG
  *      - 收集所有 <script type="text/vnd.abc">，合併後一次 tosvg()
  *      - 每段 <script> 就地替換成 <div class="abc-slot">
  *      - 渲染完成後將各 tuneN SVG 搬入對應的 abc-slot
  *   5. 播放 / 循環 / 選段 / 繼續 / 音符高亮 等完整邏輯
  *      - 各首邊界由 abcplay.add(first, last) 管理，不跨首
+ *      - 左鍵點音符：播放中直接切換起點，非播放中從該音符起播
+ *      - 右鍵點音符：設 B 點（選段終點），左鍵 click 清除 B 點
+ *      - 右鍵點空白：開選單（播放 / 繼續），有 B 點時「播放」自動選段
  *
  * 與 HTML 的約定：
  *   - 若頁面有 .tune-block 等父容器包住 <script type="text/vnd.abc">，
@@ -159,18 +185,19 @@ var CFG = {
     '    </svg>',
     '  </div>',
     '</div>',
+    // ── 選單：拿掉「選段播放」，「整首」改為「播放」 ──
+    // 「播放」onclick 根據 selx[1] 是否有 B 點，自動選擇 what=1（選段）或 what=0（整首）
     '<div id="ctxMenu">',
     '  <ul>',
-    '    <li id="cmpt">' + CFG.ICON_PLAY + ' 整首</li>',
-    '    <li id="cmps">' + CFG.ICON_PLAY + ' 選段</li>',
+    '    <li id="cmpt">' + CFG.ICON_PLAY + ' 播放</li>',
     '    <li id="cmpc">' + CFG.ICON_RESUME + ' 繼續</li>',
     '  </ul>',
     '</div>'
   ].join('\n'));
 
   document.getElementById('errbanner').onclick = function () { this.style.display = 'none'; };
-  document.getElementById('cmpt').onclick = function () { play_tune(0); };
-  document.getElementById('cmps').onclick = function () { play_tune(1); };
+  // 「播放」：有 B 點 → 選段(1)，無 B 點 → 整首(0)
+  document.getElementById('cmpt').onclick = function () { play_tune(selx[1] ? 1 : 0); };
   document.getElementById('cmpc').onclick = function () { play_tune(3); };
 
   // ── 調速面板（底部 sheet，獨立插入 body 末端）──────────────────
@@ -232,12 +259,20 @@ var CFG = {
  * coda 降落標記（_isLanding）：
  *   jump anchor 跳轉時，目標 coda anchor 設 _isLanding=true。
  *   coda anchor 看到 _isLanding 時不執行分歧跳轉，清掉標記繼續往下播。
+ *
+ * 殘存排程防護（_playGeneration）：
+ *   playStart() 每次遞增 _playGeneration 並寫入 po._gen。
+ *   play_cont 複製版開頭檢查 po._gen，版本不符即 return，
+ *   讓漏網的舊 setTimeout(play_cont,...) 自然熄滅，不再復活。
  * ══════════════════════════════════════════════════════════════════
  */
 
 // ── 全域收集：istart → sym（anno_stop 時填入）──────────────────
 var _allDecoSyms    = {};
 var _allJumpCtxList = [];
+
+// ── 播放世代號：每次 playStart 遞增，play_cont 複製版據此過濾殘存排程 ──
+var _playGeneration = 0;
 
 var _JUMP_NAMES = {
   'segno':1, 'coda':1, 'fine':1,
@@ -562,6 +597,7 @@ function _walkAnchors(s, po, ctx) {
 //   - 最小修補（instrument filter + _current_po）
 //   - 攔截點 A（播放起點預走 anchor）
 //   - play_cont 最小複製（僅加入攔截點 B，其餘與 snd-1.js 原版相同）
+//   - [GEN] 版本守衛：play_cont 開頭檢查 po._gen，過濾殘存排程
 
 var orig_play_next = abc2svg.play_next;
 
@@ -577,6 +613,12 @@ abc2svg.play_next = function(po) {
     po.note_run._patched = true;
   }
   abc2svg._current_po = po;
+  // ── [GEN] 同步世代號到 po：play_next 是 play() 後第一個拿到 po 的位置 ──
+  // _playGeneration 已在 playStart() 遞增，此處確保 po._gen 與當前世代一致。
+  // 僅當 po._gen 落後時才更新（避免 loop 重播時誤蓋後續迭代的版本號）。
+  if (po._gen === undefined || po._gen < _playGeneration) {
+    po._gen = _playGeneration;
+  }
 
   // ── jumpCtx 取得 ───────────────────────────────────────────────
   if (po._jumpCtx === undefined) {
@@ -592,10 +634,11 @@ abc2svg.play_next = function(po) {
 
   // ── patch 說明 ────────────────────────────────────────────────
   // do_tie / set_ctrl / play_cont / get_part 直接複製自 snd-1.js 原文，
-  // 不做任何修改。僅在 play_cont 的兩個位置插入 anchor 攔截點：
-  //   [B1] noplay while 之後：處理播放起點本身落在 anchor 的情況
-  //   [B2] 內層 while 的 s=s.ts_next 之後：中途遇到 anchor 時跳轉
-  // 未來 snd-1.js 更新時，只需重新複製這四個函數，再貼回 [B1][B2] 即可。
+  // 不做任何修改。僅在 play_cont 的三個位置插入修補：
+  //   [GEN] play_cont 開頭：版本守衛，過濾殘存的舊世代 setTimeout
+  //   [B1]  noplay while 之後：處理播放起點本身落在 anchor 的情況
+  //   [B2]  內層 while 的 s=s.ts_next 之後：中途遇到 anchor 時跳轉
+  // 未來 snd-1.js 更新時，只需重新複製這四個函數，再貼回 [GEN][B1][B2] 即可。
   // ─────────────────────────────────────────────────────────────
 
   // ── 以下為 snd-1.js 原文（do_tie）────────────────────────────
@@ -639,8 +682,15 @@ abc2svg.play_next = function(po) {
       po.v_c[p_v.v]=i}
     po.p_v[s2.v]=true}
 
-  // ── 以下為 snd-1.js 原文（play_cont）+ [B1][B2] anchor patch ─
+  // ── 以下為 snd-1.js 原文（play_cont）+ [GEN][B1][B2] patch ───
   function play_cont(po){var d,i,st,m,note,g,s2,t,maxt,now,p_v,C=abc2svg.C,s=po.s_cur
+
+    // ── [GEN] 版本守衛：版本不符表示這是殘存的舊世代排程，直接丟棄 ──
+    if(po._gen !== _playGeneration){
+      return;
+    }
+    // ── [GEN] end ─────────────────────────────────────────────────
+
     function var_end(s){var i,s2,s3,a=s.rep_v||s.rep_s
       var ti=0
       for(i=1;i<a.length;i++){s2=a[i]
@@ -839,7 +889,6 @@ function _patchTune(first) {
 }
 
 // ══════════════════════════════════════════
-// ══════════════════════════════════════════
 // 4. 狀態變數
 // ══════════════════════════════════════════
 var abcSrc  = '',
@@ -1023,6 +1072,7 @@ function dom_loaded() {
   if (abc2svg.modules.load(abcSrc, include)) include();
 }
 
+// ══════════════════════════════════════════
 // 7. 工具函式
 // ══════════════════════════════════════════
 function getSymIndex(el) {
@@ -1113,20 +1163,26 @@ function first_sym() {
 // ══════════════════════════════════════════
 function onLeftClick(evt) {
   if (ctxMenu.style.display === 'block') { ctxMenu.style.display = 'none'; return; }
+
+  var v = getSymIndex(evt.target);
+
   if (play.playing && !play.stopping) {
-    var v = getSymIndex(evt.target);
     if (v) {
-      // 播放中點到音符：暫停並設定新的起播位置，等待第二次 click 繼續
-      setsel(0, v);  // 只更新 A 點，保留 B 點
-      play.anchorIdx = v; updateStatus();
-      stopPlay(true);
+      // 播放中點到音符：直接切換起播位置（殘存問題由 _playGeneration 守衛解決）
+      stopPlay(false);          // 停止舊播放，不存斷點
+      setsel(0, v);             // 設新 A 點
+      setsel(1, 0);             // 清 B 點
+      play.anchorIdx = v;
+      play.ei = null;           // 整首從新音符播到結尾
+      play_tune(4);             // 從新音符立即起播
     } else {
-      stopPlay(true);   // 非音符：正常暫停
+      stopPlay(true);           // 點空白：正常暫停，存斷點
     }
     return;
   }
 
-  var v = getSymIndex(evt.target);
+  // ── 非播放狀態 ────────────────────────────────────────────────
+  // 左鍵 click 同時清除 B 點
   if (v) {
     setsel(0, v); setsel(1, 0);
     play.anchorIdx = v; updateStatus();
@@ -1145,18 +1201,21 @@ function onRightClick(evt) {
   evt.preventDefault();
   var v = getSymIndex(evt.target);
   if (v) {
+    // 右鍵點音符：設 B 點，永遠不開選單
     setsel(1, v); updateStatus();
     if (play.playing) {
+      // 播放中即時調整終點
       var a = play.anchorIdx || selx[0], b = v;
       if (a && b) {
         if (b < a) { var t = a; a = b; b = t; }
         var newSi = get_se(a), newEi = get_ee_by_time(newSi, syms[b]);
         if (abc2svg._current_po) abc2svg._current_po.s_end = newEi;
         play.ei = newEi;
-        return;
       }
     }
+    return;  // 不開選單
   }
+  // 右鍵點空白：開選單
   play.click = { svg: evt.target };
   var svgEl = evt.target.closest('svg');
   if (svgEl) {
@@ -1174,7 +1233,6 @@ function setEnabled(el, on) {
 
 function showCtxMenu(x, y) {
   setEnabled(document.getElementById('cmpt'), !play.playing);
-  setEnabled(document.getElementById('cmps'), !play.playing);
   setEnabled(document.getElementById('cmpc'), !play.playing && play.stopAt > 0);
   ctxMenu.style.display = 'block';
   requestAnimationFrame(function () {
@@ -1514,16 +1572,16 @@ function onPlayEnd(repv) {
 // play_tune(what)
 //
 //   what=0  整首 / 重播
-//             來源 A：右鍵選單「整首」— play.click.tuneFirst 指定曲子起點
+//             來源 A：右鍵選單「播放」（無 B 點）— play.click.tuneFirst 指定曲子起點
 //             來源 B：onLeftClick 空白處重播 — 從 play.si 繼續
-//             來源 C：loopSegBtn 重播       — 同上
 //
 //   what=1  選段播放
 //             從 selx[0]（A 點）到 selx[1]（B 點）之間的範圍
+//             來源：右鍵選單「播放」（有 B 點時自動選段）
 //
 //   what=3  繼續（resume）
 //             從 play.stopAt 斷點接續，play.ei 保持不變
-//             來源：右鍵選單「繼續」、onLeftClick stopAt、loopSegBtn stopAt
+//             來源：右鍵選單「繼續」、onLeftClick stopAt、ppBtn stopAt
 //
 //   what=4  從指定音符起播
 //             si 來自 selx[0]，ei 來自 play.ei（呼叫方負責設定）
@@ -1572,9 +1630,8 @@ function play_tune(what) {
       }
     } else {
       // what=0：整首 / 重播
-      //   (A) 右鍵選單「整首」：play.click.tuneFirst 指定曲子起點
+      //   (A) 右鍵選單「播放」（無 B 點）：play.click.tuneFirst 指定曲子起點
       //   (B) onLeftClick 空白處重播：改用 play.si
-      //   (C) loopSegBtn 重播：同上
       var fromClick = play.click && play.click.tuneFirst;
       play.click = null;
       si = fromClick ? gsot_tune_start(fromClick) : play.si || first_sym();
@@ -1598,15 +1655,12 @@ function playStart(si, ei) {
   if (!play.isResume) _resetAllJumpCtx();
   play.playing = true;
   play.isResume = false;
+  // ── [GEN] 遞增世代號；po._gen 的實際寫入在 play_next 內（那裡才保證拿到 po）──
+  _playGeneration++;
   updateStatus();
   if (_refreshToggleLabel) _refreshToggleLabel();
   play.abcplay.play(si, ei, play.repv);
 }
-
-// ══════════════════════════════════════════
-// 15. 啟動
-// ══════════════════════════════════════════
-// 啟動由 dom_loaded 驅動
 
 // ══════════════════════════════════════════
 // 15. 啟動
