@@ -1,10 +1,10 @@
 /**
- * player.js – abc2svg 播放器（多曲自包含版）
+ * loader.js – abc2svg 播放器（多曲自包含版）
  *
  * HTML 中只需：
- *   <script src="../abc2svg/abc2svg_files/abc2svg-1.js"></script>
- *   <script src="../abc2svg/abc2svg_files/snd-1.js"></script>
- *   <script src="./loader.js"></script>
+ *   <script src="https://cdn.jsdelivr.net/gh/helloj/test@latest/abc2svg/abc2svg_files/abc2svg-1.js"></script>
+ *   <script src="https://cdn.jsdelivr.net/gh/helloj/test@latest/abc2svg/abc2svg_files/snd-1.js"></script>
+ *   <script src="https://cdn.jsdelivr.net/gh/helloj/test@latest/player/loader.js"></script>
  *
  *   <!-- 每首曲子放在獨立的區塊 -->
  *   <script type="text/vnd.abc">
@@ -28,6 +28,9 @@
  *   - 若頁面有 .tune-block 等父容器包住 <script type="text/vnd.abc">，
  *     SVG 會自然落在容器內，說明文字與樂譜穿插排列
  *   - #target（隱藏）作為殘留 SVG 的暫存容器
+ *
+ * 刷新cdn
+ *   https://cdn.jsdelivr.net/gh/helloj/test@latest/player/loader.js
  */
 ;(function () {
 
@@ -41,7 +44,15 @@ var CFG = {
   ICON_RESUME:   '⏯',   // 繼續按鈕（stopAt > 0 狀態）
   ICON_LOOP:     '↺',   // 循環模式狀態指示（不可按）
   ICON_NOLOOP:   '➔',   // 非循環模式狀態指示（不可按）
-  ICON_INFINITE: '🔁︎',   // 無限循環
+  ICON_INFINITE: '🔁︎',  // 無限循環
+  ICON_SPEED:    '๑ï',  // 調速按鈕
+
+  // ── 播放速度 ─────────────────────────────
+  SPEED_DEFAULT:  1.0,   // 預設速度（1x）
+  SPEED_MIN:      0.25,  // 最小速度
+  SPEED_MAX:      2.0,   // 最大速度
+  SPEED_STEP:     0.05,  // +/- 步進
+  SPEED_PRESETS:  [0.5, 0.75, 1, 1.25, 1.5],  // 快速選擇
 
   // ── 循環次數 ─────────────────────────────
   LOOP_DEFAULT:  5,     // 循環 N 次的預設值
@@ -73,7 +84,7 @@ var CFG = {
     "#loop-n-input::-webkit-inner-spin-button,#loop-n-input::-webkit-outer-spin-button{-webkit-appearance:none}",
     ".seg.active #loop-n-input{color:#fff;cursor:text}",
     "#dright{display:none}",
-    ".abc-slot{display:block;width:100%;max-width:860px;margin:0 auto}",
+    ".abc-slot{display:block;width:100%;margin:0 auto}",
     ".abc-slot svg{display:block;width:100%;height:auto}",
     "#ctxMenu{position:fixed;display:none;z-index:200;background:var(--panel);border:1px solid var(--muted);border-radius:6px;box-shadow:0 6px 24px rgba(26,18,11,0.18);overflow:hidden;min-width:130px;font-size:.85rem}",
     "#ctxMenu ul{list-style:none}",
@@ -84,9 +95,30 @@ var CFG = {
     ".abcr.sel{fill:#3cc878}",
     ".abcr.selb{fill:#e07b00}",
     "#errbanner{display:none;background:#c0392b;color:#fff;padding:6px 16px;font-size:.82rem;cursor:pointer}",
-    ".tune-block{border:1px solid #ccc;border-radius:6px;margin:16px auto;max-width:860px;padding:12px 16px 0;background:#fffdf8}",
+    ".tune-block{border:1px solid #ccc;border-radius:6px;margin:16px auto;max-width:85%;padding:12px 16px 0;background:#fffdf8}",
     ".tune-block p{margin:0 0 6px;font-size:.88rem;color:#444;white-space:pre-wrap;font-family:monospace}",
-    ".tune-svg svg,.tune-block svg{display:block;width:100%;height:auto}"
+    ".tune-svg svg,.tune-block svg{display:block;width:100%;height:auto}",
+    // ── 調速面板 ──────────────────────────────────────────────────
+    // 仿 YouTube 風格：底部留白、左右留白、圓角上緣、置中內容區
+    "#speed-panel{position:fixed;bottom:0;left:0;right:0;z-index:300;display:flex;justify-content:center;pointer-events:none;transform:translateY(100%);transition:transform .22s cubic-bezier(.4,0,.2,1)}",
+    "#speed-panel.open{transform:translateY(0)}",
+    "#speed-panel-inner{pointer-events:all;width:100%;max-width:60%;background:var(--panel);border:1px solid var(--muted);border-radius:16px 16px 0 0;box-shadow:0 -4px 24px rgba(26,18,11,0.18);padding:8px 0 0;margin:0 12px}",
+    // 頂部拖曳把手（仿 iOS/Android sheet）
+    "#speed-handle{width:36px;height:4px;border-radius:2px;background:var(--muted);opacity:.5;margin:0 auto 16px}",
+    "#speed-display{text-align:center;font-size:1.8rem;font-weight:700;color:var(--ink);margin-bottom:20px;letter-spacing:.02em}",
+    "#speed-slider-row{display:flex;align-items:center;gap:14px;margin:0 20px 18px}",
+    "#speed-minus,#speed-plus{flex-shrink:0;width:2.2em;height:2.2em;border:1px solid var(--muted);border-radius:50%;background:transparent;color:var(--ink);font-size:1.1rem;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .12s}",
+    "#speed-minus:hover,#speed-plus:hover{background:rgba(139,58,58,0.12)}",
+    "#speed-slider{flex:1;-webkit-appearance:none;appearance:none;height:4px;border-radius:2px;background:linear-gradient(to right,var(--accent) var(--pct,50%),var(--muted) var(--pct,50%));outline:none;cursor:pointer}",
+    "#speed-slider::-webkit-slider-thumb{-webkit-appearance:none;width:22px;height:22px;border-radius:50%;background:var(--accent);cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.25)}",
+    "#speed-slider::-moz-range-thumb{width:22px;height:22px;border-radius:50%;background:var(--accent);cursor:pointer;border:none;box-shadow:0 1px 4px rgba(0,0,0,.25)}",
+    "#speed-presets{display:flex;justify-content:center;gap:8px;flex-wrap:wrap;padding:0 20px 24px}",
+    ".speed-preset{padding:7px 16px;border:1px solid var(--muted);border-radius:20px;background:transparent;color:var(--muted);font-size:.82rem;font-family:inherit;cursor:pointer;transition:background .12s,color .12s,border-color .12s}",
+    ".speed-preset:hover{background:rgba(139,58,58,0.10);color:var(--ink)}",
+    ".speed-preset.active{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600}",
+    "#speed-btn{display:flex;align-items:center;justify-content:center;width:2.4em;height:2.4em;border:1px solid var(--muted);border-radius:4px;background:transparent;color:var(--muted);font-size:.85rem;cursor:pointer;transition:background .12s,color .12s;line-height:1;padding:0;font-family:inherit}",
+    "#speed-btn:hover{background:rgba(139,58,58,0.10);color:var(--ink)}",
+    "#speed-btn.active{background:rgba(139,58,58,0.15);color:var(--ink)}"
   ].join('\n');
   document.head.appendChild(style);
 
@@ -116,6 +148,8 @@ var CFG = {
     '    </span>',
     '    <span class="seg" data-val="' + CFG.LOOP_INFINITE + '">' + CFG.ICON_INFINITE + '</span>',
     '  </div>',
+    '  <div class="fab-divider"></div>',
+    '  <button id="speed-btn">' + CFG.ICON_SPEED + '</button>',
     '</div>',
     '<div id="errbanner"></div>',
     '<div id="dright">',
@@ -138,6 +172,28 @@ var CFG = {
   document.getElementById('cmpt').onclick = function () { play_tune(0); };
   document.getElementById('cmps').onclick = function () { play_tune(1); };
   document.getElementById('cmpc').onclick = function () { play_tune(3); };
+
+  // ── 調速面板（底部 sheet，獨立插入 body 末端）──────────────────
+  var _presetHtml = CFG.SPEED_PRESETS.map(function(v) {
+    return '<button class="speed-preset' + (v === CFG.SPEED_DEFAULT ? ' active' : '') +
+           '" data-speed="' + v + '">' + v + 'x</button>';
+  }).join('');
+  body.insertAdjacentHTML('beforeend', [
+    '<div id="speed-panel">',
+    '  <div id="speed-panel-inner">',
+    '    <div id="speed-handle"></div>',
+    '    <div id="speed-display">' + CFG.SPEED_DEFAULT.toFixed(2) + '×</div>',
+    '    <div id="speed-slider-row">',
+    '      <button id="speed-minus">－</button>',
+    '      <input id="speed-slider" type="range"',
+    '        min="' + CFG.SPEED_MIN + '" max="' + CFG.SPEED_MAX + '"',
+    '        step="' + CFG.SPEED_STEP + '" value="' + CFG.SPEED_DEFAULT + '" />',
+    '      <button id="speed-plus">＋</button>',
+    '    </div>',
+    '    <div id="speed-presets">' + _presetHtml + '</div>',
+    '  </div>',
+    '</div>'
+  ].join('\n'));
 }());
 
 // ══════════════════════════════════════════
@@ -793,6 +849,7 @@ var abcSrc  = '',
     loopCount = 0,
     selx      = [0, 0],
     selx_sav  = [],
+    currentSpeed = CFG.SPEED_DEFAULT,  // 當前播放速度（倍率）
     _refreshToggleLabel = null,
     play = {
       playing:false, stopping:false, stopAt:0,
@@ -1265,6 +1322,100 @@ function showCtxMenu(x, y) {
     ninput.value = n; loopMode = n; play.loop = true; loopCount = 0;
     refreshToggleLabel(); updateStatus(); ninput.blur();
   });
+}());
+
+// ══════════════════════════════════════════
+// 9b. 調速面板
+// ══════════════════════════════════════════
+(function () {
+  var panel    = document.getElementById('speed-panel'),
+      display  = document.getElementById('speed-display'),
+      slider   = document.getElementById('speed-slider'),
+      btnMinus = document.getElementById('speed-minus'),
+      btnPlus  = document.getElementById('speed-plus'),
+      speedBtn = document.getElementById('speed-btn');
+
+  // ── 更新滑桿填色（用 CSS 自訂屬性模擬已填色段）────────────────
+  function updateSliderFill(v) {
+    var pct = ((v - CFG.SPEED_MIN) / (CFG.SPEED_MAX - CFG.SPEED_MIN) * 100).toFixed(1) + '%';
+    slider.style.setProperty('--pct', pct);
+  }
+
+  // ── 套用速度（更新所有 UI 並呼叫引擎）──────────────────────────
+  function applySpeed(v) {
+    // 限制在合法範圍，四捨五入到 STEP
+    v = Math.round(v / CFG.SPEED_STEP) * CFG.SPEED_STEP;
+    v = Math.max(CFG.SPEED_MIN, Math.min(CFG.SPEED_MAX, v));
+    v = parseFloat(v.toFixed(2));
+    currentSpeed = v;
+
+    // 更新顯示
+    display.textContent = v.toFixed(2) + '×';
+    slider.value = v;
+    updateSliderFill(v);
+
+    // 更新預設按鈕 active 狀態
+    var presets = panel.querySelectorAll('.speed-preset');
+    presets.forEach(function (btn) {
+      btn.classList.toggle('active', parseFloat(btn.dataset.speed) === v);
+    });
+
+    // 通知播放引擎（播放中即時生效，未播放時下次播放自動套用）
+    if (play.abcplay) play.abcplay.set_speed(v);
+  }
+
+  // ── 開關面板 ────────────────────────────────────────────────────
+  function openPanel() {
+    panel.classList.add('open');
+    speedBtn.classList.add('active');
+  }
+
+  function closePanel() {
+    panel.classList.remove('open');
+    speedBtn.classList.remove('active');
+  }
+
+  // ── 速度 icon 按鈕：toggle panel ────────────────────────────────
+  speedBtn.addEventListener('click', function (e) {
+    e.stopPropagation();
+    if (panel.classList.contains('open')) closePanel();
+    else openPanel();
+  });
+
+  // ── 點擊 panel 外關閉（避免 panel 內部操作誤觸發）───────────────
+  document.addEventListener('click', function (e) {
+    if (panel.classList.contains('open') &&
+        !panel.contains(e.target) &&
+        e.target !== speedBtn) {
+      closePanel();
+    }
+  });
+
+  // ── 滑桿拖曳 ────────────────────────────────────────────────────
+  slider.addEventListener('input', function () {
+    applySpeed(parseFloat(slider.value));
+  });
+
+  // ── +/- 按鈕 ────────────────────────────────────────────────────
+  btnMinus.addEventListener('click', function (e) {
+    e.stopPropagation();
+    applySpeed(currentSpeed - CFG.SPEED_STEP);
+  });
+  btnPlus.addEventListener('click', function (e) {
+    e.stopPropagation();
+    applySpeed(currentSpeed + CFG.SPEED_STEP);
+  });
+
+  // ── 預設快速選擇按鈕 ────────────────────────────────────────────
+  panel.addEventListener('click', function (e) {
+    var btn = e.target.closest('.speed-preset');
+    if (!btn) return;
+    e.stopPropagation();
+    applySpeed(parseFloat(btn.dataset.speed));
+  });
+
+  // ── 初始化（設定滑桿填色）───────────────────────────────────────
+  updateSliderFill(CFG.SPEED_DEFAULT);
 }());
 
 // ══════════════════════════════════════════
