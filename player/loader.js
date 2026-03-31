@@ -667,12 +667,14 @@ abc2svg.play_next = function(po) {
 
   // ── patch 說明 ────────────────────────────────────────────────
   // do_tie / set_ctrl / play_cont / get_part 直接複製自 snd-1.js 原文，
-  // 不做任何修改。僅在 play_cont 的三個位置插入修補：
+  // 不做任何修改。僅在 play_cont 的四個位置插入修補：
   //   [GEN] play_cont 開頭：init po._gen + 遞增世代號 + 版本守衛，
   //         過濾殘存的舊世代 setTimeout（集中於 play_cont，play_next 不介入）
   //   [B1]  noplay while 之後：處理播放起點本身落在 anchor 的情況
   //   [B2]  內層 while 的 s=s.ts_next 之後：中途遇到 anchor 時跳轉
-  // 未來 snd-1.js 更新時，只需重新複製這四個函數，再貼回 [GEN][B1][B2] 即可。
+  //   [STATE] NOTE/REST 排程時：把 repv/repn 快照到 sym，供 notehlight 讀取
+  //   [resume] 還原 po.repv, po.repn
+  // 未來 snd-1.js 更新時，只需重新複製這四個函數，再貼回 [GEN][B1][B2][STATE][resume] 即可。
   // ─────────────────────────────────────────────────────────────
 
   // ── 以下為 snd-1.js 原文（do_tie）────────────────────────────
@@ -716,7 +718,7 @@ abc2svg.play_next = function(po) {
       po.v_c[p_v.v]=i}
     po.p_v[s2.v]=true}
 
-  // ── 以下為 snd-1.js 原文（play_cont）+ [GEN][B1][B2] patch ───
+  // ── 以下為 snd-1.js 原文（play_cont）+ [GEN][B1][B2][STATE][resume] patch ──
   function play_cont(po){var d,i,st,m,note,g,s2,t,maxt,now,p_v,C=abc2svg.C,s=po.s_cur
 
     // ── [GEN] 首次進入（po 剛建立）：init + 遞增世代號
@@ -748,7 +750,7 @@ abc2svg.play_next = function(po) {
         po.onend(po.repv)
         return}}
 
-    // ── [B1] anchor patch：起點落在 anchor 時走過並取得落點 ──────
+    // ── [B1] 起點落在 anchor 時走過並取得落點 ────────────────────
     if(s._anchor){
       s=_walkAnchors(s,po,ctx)
       if(!s){if(po.onend)po.onend(po.repv);return}
@@ -817,6 +819,10 @@ abc2svg.play_next = function(po) {
           po.note_run(po,s,note.midi,t,note.tie_e?do_tie(note,d):d)}}
         if(po.onnote&&s.istart){i=s.istart
           st=(t-now)*1000
+          // ── [STATE] 排程當下把 repv/repn 快照到 sym，
+          // notehlight(on=true) 觸發時再讀取，確保精確對應使用者聽到的位置。
+          s._snapRepv=po.repv; s._snapRepn=po.repn;
+          // ── [STATE] end ───────────────────────────────────────
           po.timouts.push(setTimeout(po.onnote,st,i,true))
           if(d>2)
             d-=.1
@@ -828,7 +834,7 @@ abc2svg.play_next = function(po) {
         return}
       s=s.ts_next
 
-      // ── [B2] anchor patch：中途遇到 anchor 時跳轉 ────────────
+      // ── [B2] 中途遇到 anchor 時跳轉 ──────────────────────────
       if(s._anchor){
         var walked=_walkAnchors(s,po,ctx)
         if(!walked){if(po.onend)setTimeout(po.onend,(t-now+d)*1000,po.repv);po.s_cur=s;return}
@@ -870,8 +876,20 @@ abc2svg.play_next = function(po) {
   po.stim=po.get_time(po)+.3
     -po.s_cur.ptim/po.conf.speed
   po.p_v=[]
-  if(!po.repv)
-    po.repv=1
+  // ── [resume] 時還原 repv/repn（最小化）─────────────────────────
+  // play.resumeRepv/resumeRepn 由 stopPlay 從 abc2svg._play_state 讀取後存入；
+  // _play_state 是 notehlight(on=true) 在音符發聲瞬間精確記錄的快照。
+  // 用完即清，天然一次性，不需要額外全域物件或 codaState/jumpState 快照。
+  if (play.resumeRepv !== undefined) {
+    po.repv = play.resumeRepv;
+    po.repn = play.resumeRepn || false;
+    play.resumeRepv = undefined;
+    play.resumeRepn = undefined;
+  } else {
+    if(!po.repv)
+      po.repv=1
+  }
+  // ── [resume] end ───────────────────────────────────────────────
   play_cont(po)
 };
 
@@ -946,7 +964,10 @@ var abcSrc  = '',
       si:null, ei:null, repv:0,
       abcplay:null, click:null,
       lastNote:0, curNotes:new Set(), anchorIdx:0,
-      isResume: false
+      isResume: false,
+      // resumeRepv/resumeRepn：由 stopPlay(savePos=true) 設定，
+      // play_next 末尾還原 po.repv/repn 後即清。
+      resumeRepv: undefined, resumeRepn: undefined
     };
 
 // ══════════════════════════════════════════
@@ -1486,6 +1507,11 @@ function notehlight(i, on) {
     // 多聲部：同一時間點多個 istart 都可以亮，不清舊
     play.lastNote = i;
     play.curNotes.add(i);
+    // [STATE] 音符發聲瞬間，從 sym 讀取排程時存入的 repv/repn 快照，
+    // 這是唯一精確對應「使用者聽到位置」的時機。
+    var _s = syms[i];
+    if (_s && _s._snapRepv !== undefined)
+      abc2svg._play_state = { repv: _s._snapRepv, repn: _s._snapRepn };
   } else {
     play.curNotes.delete(i);
   }
@@ -1512,7 +1538,14 @@ function setNoteOp(i, on) {
 // ══════════════════════════════════════════
 function stopPlay(savePos) {
   play.stopping = true;
-  if (savePos) play.stopAt = play.lastNote || 0;
+  if (savePos) {
+    play.stopAt = play.lastNote || 0;
+    // 從 _play_state（notehlight 在音符發聲瞬間更新的快照）讀取，
+    // 確保 repv/repn 精確對應使用者聽到的位置，而非 play_cont 批次末尾的值。
+    var ps = abc2svg._play_state;
+    play.resumeRepv = ps ? (ps.repv || 1) : 1;
+    play.resumeRepn = ps ? (ps.repn || false) : false;
+  }
   play.abcplay.stop();
 }
 
@@ -1570,12 +1603,13 @@ function play_tune(what) {
   var si, ei;
 
   if (what === 3) {
-    // 繼續：從斷點接續，不 reset 跳轉錨點
+    // 繼續：從斷點接續，走 abcplay.play()。
+    // repv/repn 已由 stopPlay 存入 play.resumeRepv/resumeRepn，
+    // play_next 末尾讀取還原後即清，不需要額外全域物件。
     if (play.stopAt <= 0) return;
     si = get_se(play.stopAt);
     ei = play.ei; play.stopAt = 0;
     if (!si) return;
-    play.repv = 0;
     play.isResume = true;
   } else if (what === 4) {
     // 從指定音符起播
@@ -1622,6 +1656,7 @@ window.play_tune = play_tune;
 
 function playStart(si, ei) {
   if (!si) return;
+  // resume 時 anchor 狀態存在 sym 節點上，stop 後仍存活，不需要 reset jumpCtx
   if (!play.isResume) _resetAllJumpCtx();
   play.playing = true;
   play.isResume = false;
