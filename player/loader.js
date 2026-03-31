@@ -56,7 +56,7 @@
  *   - #target（隱藏）作為殘留 SVG 的暫存容器
  *
  * 刷新cdn
- *   https://cdn.jsdelivr.net/gh/helloj/test@latest/player/loader.js
+ *   https://purge.jsdelivr.net/gh/helloj/test@latest/player/loader.js
  */
 ;(function () {
 
@@ -80,9 +80,8 @@ var CFG = {
   SPEED_STEP:     0.05,  // +/- 步進
   SPEED_PRESETS:  [0.5, 0.75, 1, 1.25, 1.5],  // 快速選擇
 
-  // ── 循環次數 ─────────────────────────────
-  LOOP_DEFAULT:  5,     // 循環 N 次的預設值
-  LOOP_INFINITE: 99,    // 無限循環的代理數值（內部用）
+  // ── 循環 ─────────────────────────────────
+  LOOP_INFINITE: 99,    // loop-on 的代理數值（loopMode !== 0 即表示啟用）
 };
 
 // ══════════════════════════════════════════
@@ -105,17 +104,6 @@ var CFG = {
     "#loop-icon{display:flex;align-items:center;justify-content:center;width:2.4em;height:2.4em;border:1px solid var(--muted);border-radius:4px;background:transparent;color:var(--muted);font-size:.85rem;cursor:pointer;transition:background .12s,color .12s;line-height:1;padding:0;font-family:inherit;white-space:nowrap}",
     "#loop-icon:hover{background:rgba(139,58,58,0.10);color:var(--ink)}",
     "#loop-icon.active{background:rgba(139,58,58,0.15);color:var(--ink)}",
-    // ── loop-popup：下拉浮層，預設隱藏 ──
-    "#loop-popup{position:absolute;top:calc(100% + 6px);left:50%;transform:translateX(-50%);z-index:100;display:none;flex-direction:column;background:var(--panel);border:1px solid var(--muted);border-radius:6px;box-shadow:0 4px 16px rgba(139,58,58,0.18);overflow:hidden;min-width:2.8em}",
-    "#loop-popup.open{display:flex}",
-    ".seg-btn{display:flex;flex-direction:column;cursor:pointer}",
-    ".seg-btn .seg{display:flex;align-items:center;justify-content:center;padding:7px 6px;font-size:.7rem;font-family:inherit;background:transparent;color:var(--muted);transition:background .12s,color .12s;white-space:nowrap;cursor:pointer}",
-    ".seg-btn .seg:not(:last-child){border-bottom:1px solid var(--muted)}",
-    ".seg-btn .seg:hover{background:rgba(139,58,58,0.10);color:var(--ink)}",
-    ".seg-btn .seg.active{background:var(--accent);color:#fff;font-weight:600}",
-    "#loop-n-input{width:2em;border:none;background:transparent;color:inherit;font:inherit;font-size:.7rem;text-align:center;outline:none;padding:0;cursor:pointer;-moz-appearance:textfield}",
-    "#loop-n-input::-webkit-inner-spin-button,#loop-n-input::-webkit-outer-spin-button{-webkit-appearance:none}",
-    ".seg.active #loop-n-input{color:#fff;cursor:text}",
     "#dright{display:none}",
     ".abc-slot{display:block;width:100%;margin:0 auto}",
     ".abc-slot svg{display:block;width:100%;height:auto}",
@@ -130,12 +118,12 @@ var CFG = {
     "#errbanner{display:none;background:#c0392b;color:#fff;padding:6px 16px;font-size:.82rem;cursor:pointer}",
     ".tune-block{border:1px solid #ccc;border-radius:6px;margin:16px auto;max-width:85%;padding:12px 16px 0;background:#fffdf8}",
     ".tune-block p{margin:0 0 6px;font-size:.88rem;color:#444;white-space:pre-wrap;font-family:monospace}",
-    ".tune-block svg{display:block;width:100%;height:auto}",
+    ".tune-svg svg,.tune-block svg{display:block;width:100%;height:auto}",
     // ── 調速面板 ──────────────────────────────────────────────────
     // 仿 YouTube 風格：底部留白、左右留白、圓角上緣、置中內容區
     "#speed-panel{position:fixed;bottom:0;left:0;right:0;z-index:300;display:flex;justify-content:center;pointer-events:none;transform:translateY(100%);transition:transform .22s cubic-bezier(.4,0,.2,1)}",
     "#speed-panel.open{transform:translateY(0)}",
-    "#speed-panel-inner{pointer-events:all;width:100%;max-width:60%;background:var(--panel-solid);border:1px solid var(--muted);border-radius:16px 16px 0 0;box-shadow:0 -4px 24px rgba(26,18,11,0.18);padding:8px 0 0;margin:0 12px}",
+    "#speed-panel-inner{pointer-events:all;width:100%;max-width:87%;background:var(--panel-solid);border:1px solid var(--muted);border-radius:16px 16px 0 0;box-shadow:0 -4px 24px rgba(26,18,11,0.18);padding:8px 0 0;margin:0 12px}",
     // 頂部拖曳把手（仿 iOS/Android sheet）
     "#speed-handle{width:36px;height:4px;border-radius:2px;background:var(--muted);opacity:.5;margin:0 auto 16px}",
     "#speed-display{text-align:center;font-size:1.8rem;font-weight:700;color:var(--ink);margin-bottom:20px;letter-spacing:.02em}",
@@ -174,17 +162,9 @@ var CFG = {
     '<div id="fab-toolbar">',
     '  <button id="play-pause-btn">' + CFG.ICON_PLAY + '</button>',
     '  <div class="fab-divider"></div>',
-    // loopSegBtn 只顯示 loop-icon；seg-n / seg-infinite 收進 loop-popup 浮層
+    // loopSegBtn：只保留 loop-icon toggle 按鈕
     '  <div id="loopSegBtn">',
     '    <span id="loop-icon">' + CFG.ICON_NOLOOP + '</span>',
-    '    <div id="loop-popup">',
-    '      <div class="seg-btn">',
-    '        <span class="seg" data-val="' + CFG.LOOP_DEFAULT + '" id="seg-n">',
-    '          <input id="loop-n-input" type="number" min="1" max="' + CFG.LOOP_INFINITE + '" value="' + CFG.LOOP_DEFAULT + '"/>',
-    '        </span>',
-    '        <span class="seg" data-val="' + CFG.LOOP_INFINITE + '" id="seg-infinite">' + CFG.ICON_INFINITE + '</span>',
-    '      </div>',
-    '    </div>',
     '  </div>',
     '  <div class="fab-divider"></div>',
     '  <button id="speed-btn">' + CFG.ICON_SPEED + '</button>',
@@ -916,7 +896,7 @@ var abcSrc  = '',
     _refreshToggleLabel = null,
     play = {
       playing:false, stopping:false, stopAt:0,
-      si:null, ei:null, repv:0, loop:false,
+      si:null, ei:null, repv:0,
       abcplay:null, click:null,
       lastNote:0, curNote:0, anchorIdx:0,
       isResume: false
@@ -1206,7 +1186,7 @@ function onLeftClick(evt) {
     play_tune(3);
   } else {
     play.click = null;  // 非右鍵觸發，清除上次右鍵殘留
-    play.loop = (loopMode !== 0); play.repv = 0; play.stopAt = 0; loopCount = 0;
+    play.repv = 0; play.stopAt = 0; loopCount = 0;
     play_tune(0);
   }
 }
@@ -1262,9 +1242,7 @@ function showCtxMenu(x, y) {
 // 9. 播放/暫停按鈕 + 循環開關
 // ══════════════════════════════════════════
 (function () {
-  var loopPopup = document.getElementById('loop-popup'),
-      ninput    = document.getElementById('loop-n-input'),
-      loopIcon  = document.getElementById('loop-icon'),
+  var loopIcon  = document.getElementById('loop-icon'),
       ppBtn     = document.getElementById('play-pause-btn');
 
   // ── Play/Pause 按鈕顯示更新 ─────────────────────────────────────
@@ -1283,12 +1261,8 @@ function showCtxMenu(x, y) {
     var on = loopMode !== 0;
     loopIcon.classList.toggle('active', on);
     if (on && play.playing) {
-      if (loopMode === CFG.LOOP_INFINITE) {
-        loopIcon.textContent = '×' + (loopCount + 1);
-      } else {
-        var total = Number(document.getElementById('loop-n-input').value) || loopMode;
-        loopIcon.textContent = (loopCount + 1) + '/' + total;
-      }
+      // 播放中顯示累計循環次數
+      loopIcon.textContent = '×' + (loopCount + 1);
     } else {
       loopIcon.textContent = on ? CFG.ICON_LOOP : CFG.ICON_NOLOOP;
     }
@@ -1300,15 +1274,6 @@ function showCtxMenu(x, y) {
     refreshLoopIcon();
   }
   _refreshToggleLabel = refreshToggleLabel;
-
-  // ── loop-popup 開關 ──────────────────────────────────────────────
-  function openPopup() {
-    loopPopup.classList.add('open');
-  }
-
-  function closePopup() {
-    loopPopup.classList.remove('open');
-  }
 
   // ── Play/Pause 按鈕 click ───────────────────────────────────────
   ppBtn.addEventListener('click', function () {
@@ -1324,102 +1289,27 @@ function showCtxMenu(x, y) {
     }
   });
 
-  // ── 內部：設定循環模式 ──────────────────────────────────────────
-  // dv：CFG.LOOP_DEFAULT（讀 ninput 值）或 CFG.LOOP_INFINITE
-  function setLoopMode(dv) {
-    loopMode  = (dv === CFG.LOOP_DEFAULT)
-                ? (Number(ninput.value) || CFG.LOOP_DEFAULT)
-                : dv;
-    if (dv === CFG.LOOP_INFINITE) ninput.value = CFG.LOOP_INFINITE;
-    play.loop = true;
+  // ── 內部：啟用循環 ──────────────────────────────────────────────
+  function setLoopMode() {
+    loopMode  = CFG.LOOP_INFINITE;
     loopCount = 0;
-    document.querySelectorAll('#loop-popup .seg[data-val]').forEach(function (s) {
-      s.classList.toggle('active', Number(s.dataset.val) === dv);
-    });
     refreshLoopIcon(); updateStatus();
   }
 
-  // ── 內部：關閉循環（loopMode→0，ninput 保持不動作為記憶）────────
+  // ── 內部：關閉循環 ──────────────────────────────────────────────
   function clearLoopMode() {
     loopMode  = 0;
-    play.loop = false;
     loopCount = 0;
-    document.querySelectorAll('#loop-popup .seg[data-val]').forEach(function (s) {
-      s.classList.remove('active');
-    });
     refreshLoopIcon(); updateStatus();
   }
 
-  // ── loop-icon click：直接 toggle loopMode（選項 1）──────────────
-  // 若浮層已關 + loopMode=0 → 展開浮層（不 toggle）
-  // 其他情況 → 直接 toggle on/off
+  // ── loop-icon click：直接 toggle loopMode ───────────────────────
   loopIcon.addEventListener('click', function (e) {
     e.stopPropagation();
-    var isOpen = loopPopup.classList.contains('open');
-    if (!isOpen && loopMode === 0) {
-      // 浮層關閉 + 未啟用：展開讓用戶選模式
-      openPopup();
-      return;
-    }
-    // 其他情況：直接 toggle
-    if (loopMode !== 0) {
-      clearLoopMode();
-    } else {
-      var n = Number(ninput.value) || CFG.LOOP_DEFAULT;
-      setLoopMode(n === CFG.LOOP_INFINITE ? CFG.LOOP_INFINITE : CFG.LOOP_DEFAULT);
-    }
-    closePopup();
+    if (loopMode !== 0) clearLoopMode();
+    else setLoopMode();
   });
 
-  // ── loop-popup 內部 click（seg-n / seg-infinite）────────────────
-  loopPopup.addEventListener('click', function (e) {
-    e.stopPropagation();
-    // ninput 本身只啟用，不 toggle
-    if (e.target === ninput) {
-      if (!document.getElementById('seg-n').classList.contains('active'))
-        setLoopMode(CFG.LOOP_DEFAULT);
-      return;
-    }
-    var sp = e.target.closest('.seg[data-val]');
-    if (!sp) return;
-    if (sp.classList.contains('active')) {
-      clearLoopMode();
-    } else {
-      setLoopMode(Number(sp.dataset.val));
-    }
-    closePopup();
-  });
-
-  // ── 點 popup 外部關閉（同 speed-panel 模式）─────────────────────
-  document.addEventListener('click', function (e) {
-    if (loopPopup.classList.contains('open') &&
-        !loopPopup.contains(e.target) &&
-        e.target !== loopIcon) {
-      closePopup();
-    }
-  });
-
-  ninput.addEventListener('input', function (e) {
-    e.stopPropagation();
-    var n = Math.max(1, Math.min(CFG.LOOP_INFINITE, parseInt(ninput.value) || 1));
-    ninput.value = n;
-    if (document.getElementById('seg-n').classList.contains('active')) {
-      loopMode = n; updateStatus();
-    }
-  });
-  ninput.addEventListener('click',  function (e) { e.stopPropagation(); });
-  ninput.addEventListener('focus',  function () {
-    if (!document.getElementById('seg-n').classList.contains('active')) setLoopMode(CFG.LOOP_DEFAULT);
-    ninput.select();
-  });
-  ninput.addEventListener('keydown', function (e) {
-    if (e.key !== 'Enter') return;
-    e.preventDefault();
-    var n = Math.max(1, Math.min(CFG.LOOP_INFINITE, parseInt(ninput.value) || 1));
-    ninput.value = n; loopMode = n; play.loop = true; loopCount = 0;
-    refreshToggleLabel(); updateStatus(); ninput.blur();
-    closePopup();
-  });
 }());
 
 // ══════════════════════════════════════════
@@ -1580,23 +1470,16 @@ function stopPlay(savePos) {
 
 function onPlayEnd(repv) {
   if (!play.stopping && play.stopAt === 0) {
-    if (loopMode === CFG.LOOP_INFINITE) {
+    // 循環模式：直接重播（loopMode !== 0 即啟用，無次數上限）
+    if (loopMode !== 0) {
       ++loopCount;
       if (_refreshToggleLabel) _refreshToggleLabel();
       playStart(play.si, play.ei);
       return;
-    } else if (loopMode !== 0) {
-      var total = Number(document.getElementById('loop-n-input').value) || loopMode;
-      if (++loopCount < total) {
-        if (_refreshToggleLabel) _refreshToggleLabel();
-        playStart(play.si, play.ei);
-        return;
-      }
-      loopCount = 0;
     }
   }
   if (!play.stopping) loopCount = 0;
-  play.playing = play.loop = false;
+  play.playing = false;
   play.stopping = false;
   play.repv = repv;
   selx_sav[0] = selx[0]; selx_sav[1] = selx[1];
@@ -1652,7 +1535,6 @@ function play_tune(what) {
     if (!si) return;
     play.si = si;
     ei = play.ei;
-    play.loop = (loopMode !== 0);
     play.repv = 0; play.stopAt = 0; loopCount = 0;
   } else {
     play.stopAt = 0;
@@ -1679,8 +1561,8 @@ function play_tune(what) {
       if (!si) return;
     }
     if (si && ei && si === ei) ei = get_measure_end(syms.indexOf(si));
-    play.si = si; play.ei = ei; play.loop = (loopMode !== 0); play.repv = 0;
-    if (!play.loop) loopCount = 0;
+    play.si = si; play.ei = ei; play.repv = 0;
+    if (loopMode === 0) loopCount = 0;
   }
 
   // 狀態重設
