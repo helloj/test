@@ -24,9 +24,9 @@
 
 /**
  * HTML 中只需：
- *   <script src="https://cdn.jsdelivr.net/gh/helloj/test@latest/abc2svg/abc2svg_files/abc2svg-1.js"></script>
- *   <script src="https://cdn.jsdelivr.net/gh/helloj/test@latest/abc2svg/abc2svg_files/snd-1.js"></script>
- *   <script src="https://cdn.jsdelivr.net/gh/helloj/test@latest/player/loader.js"></script>
+ *   <script src="https://cdn.jsdelivr.net/gh/helloj/test@main/abc2svg/abc2svg_files/abc2svg-1.js"></script>
+ *   <script src="https://cdn.jsdelivr.net/gh/helloj/test@main/abc2svg/abc2svg_files/snd-1.js"></script>
+ *   <script src="https://cdn.jsdelivr.net/gh/helloj/test@main/player/loader.js"></script>
  *
  *   <!-- 每首曲子放在獨立的區塊 -->
  *   <script type="text/vnd.abc">
@@ -54,9 +54,6 @@
  *   - 若頁面有 .tune-block 等父容器包住 <script type="text/vnd.abc">，
  *     SVG 會自然落在容器內，說明文字與樂譜穿插排列
  *   - #target（隱藏）作為殘留 SVG 的暫存容器
- *
- * 刷新cdn
- *   https://purge.jsdelivr.net/gh/helloj/test@latest/player/loader.js
  */
 ;(function () {
 
@@ -94,12 +91,11 @@ var CFG = {
     "*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}",
     ":root{--ink:#1a120b;--paper:#f5efe6;--accent:#8b3a3a;--muted:#c2a97a;--panel:rgba(245,239,230,0.66);--panel-solid: rgb(245,239,230)}",
     "html,body{height:100%;background:var(--paper);color:var(--ink);font-family:'Noto Serif TC','Kaiti TC','STKaiti',serif}",
-    // ── fab-toolbar：水平浮動，固定在右上角 ──
+    /* fab-toolbar：水平浮動，固定在右上角 */
     "#fab-toolbar{position:fixed;top:16px;right:100px;z-index:50;display:flex;flex-direction:row;align-items:center;gap:6px;background:var(--panel);border:1px solid var(--muted);border-radius:8px;padding:6px 8px;box-shadow:0 4px 16px rgba(139,58,58,0.15);user-select:none}",
     ".fab-divider{width:1px;height:1.8em;background:var(--muted);opacity:.4;margin:0 2px}",
     "#play-pause-btn{display:flex;align-items:center;justify-content:center;width:2.4em;height:2.4em;border:1px solid var(--muted);border-radius:4px;background:transparent;color:var(--muted);font-size:.85rem;cursor:pointer;transition:background .12s,color .12s;line-height:1;padding:0;font-family:inherit}",
     "#play-pause-btn:hover{background:rgba(139,58,58,0.10);color:var(--ink)}",
-    // ── loopSegBtn：只顯示 loop-icon 這一顆按鈕 ──
     "#loopSegBtn{position:relative;display:flex;align-items:center}",
     "#loop-icon{display:flex;align-items:center;justify-content:center;width:2.4em;height:2.4em;border:1px solid var(--muted);border-radius:4px;background:transparent;color:var(--muted);font-size:.85rem;cursor:pointer;transition:background .12s,color .12s;line-height:1;padding:0;font-family:inherit;white-space:nowrap}",
     "#loop-icon:hover{background:rgba(139,58,58,0.10);color:var(--ink)}",
@@ -119,12 +115,11 @@ var CFG = {
     ".tune-block{border:1px solid #ccc;border-radius:6px;margin:16px auto;max-width:85%;padding:12px 16px 0;background:#fffdf8}",
     ".tune-block p{margin:0 0 6px;font-size:.88rem;color:#444;white-space:pre-wrap;font-family:monospace}",
     ".tune-svg svg,.tune-block svg{display:block;width:100%;height:auto}",
-    // ── 調速面板 ──────────────────────────────────────────────────
-    // 仿 YouTube 風格：底部留白、左右留白、圓角上緣、置中內容區
+    /* 調速面板：底部 sheet，仿 YouTube 風格 */
     "#speed-panel{position:fixed;bottom:0;left:0;right:0;z-index:300;display:flex;justify-content:center;pointer-events:none;transform:translateY(100%);transition:transform .22s cubic-bezier(.4,0,.2,1)}",
     "#speed-panel.open{transform:translateY(0)}",
     "#speed-panel-inner{pointer-events:all;width:100%;max-width:87%;background:var(--panel-solid);border:1px solid var(--muted);border-radius:16px 16px 0 0;box-shadow:0 -4px 24px rgba(26,18,11,0.18);padding:8px 0 0;margin:0 12px}",
-    // 頂部拖曳把手（仿 iOS/Android sheet）
+    /* 頂部拖曳把手（仿 iOS/Android sheet）*/
     "#speed-handle{width:36px;height:4px;border-radius:2px;background:var(--muted);opacity:.5;margin:0 auto 16px}",
     "#speed-display{text-align:center;font-size:1.8rem;font-weight:700;color:var(--ink);margin-bottom:20px;letter-spacing:.02em}",
     "#speed-slider-row{display:flex;align-items:center;gap:14px;margin:0 20px 18px}",
@@ -162,7 +157,6 @@ var CFG = {
     '<div id="fab-toolbar">',
     '  <button id="play-pause-btn">' + CFG.ICON_PLAY + '</button>',
     '  <div class="fab-divider"></div>',
-    // loopSegBtn：只保留 loop-icon toggle 按鈕
     '  <div id="loopSegBtn">',
     '    <span id="loop-icon">' + CFG.ICON_NOLOOP + '</span>',
     '  </div>',
@@ -177,8 +171,6 @@ var CFG = {
     '    </svg>',
     '  </div>',
     '</div>',
-    // ── 選單：拿掉「選段播放」，「整首」改為「播放」 ──
-    // 「播放」onclick 根據 selx[1] 是否有 B 點，自動選擇 what=1（選段）或 what=0（整首）
     '<div id="ctxMenu">',
     '  <ul>',
     '    <li id="cmpt">' + CFG.ICON_PLAY + ' 播放</li>',
@@ -422,6 +414,14 @@ function _insertTuneEndAnchor(first) {
 
 // ── tune 掃描與錨點建立 ──────────────────────────────────────────
 
+// ptim 去重輔助：若 arr 中已有相同 ptim 的 anchor 則不重複加入
+function _pushIfNewPtim(arr, a) {
+  for (var j = 0; j < arr.length; j++) {
+    if (arr[j].ptim === a.ptim) return;
+  }
+  arr.push(a);
+}
+
 function _tuneIstartRange(first) {
   var lo = Infinity, hi = -Infinity, s = first;
   while (s) {
@@ -478,31 +478,17 @@ function _buildJumpCtx(first) {
 
       if (name === 'segno') {
         var a = _insertAnchorBefore(s, { _landAnchor: true, _segnoAnchor: true });
-        // ptim 去重
-        var dup = false;
-        for (var j = 0; j < segnoAnchors.length; j++) {
-          if (segnoAnchors[j].ptim === a.ptim) { dup = true; break; }
-        }
-        if (!dup) segnoAnchors.push(a);
+        _pushIfNewPtim(segnoAnchors, a);
       }
 
       if (name === 'fine') {
         var a = _insertAnchorBefore(s, { _landAnchor: true, _fineAnchor: true, jumpFine: false });
-        var dup = false;
-        for (var j = 0; j < fineAnchors.length; j++) {
-          if (fineAnchors[j].ptim === a.ptim) { dup = true; break; }
-        }
-        if (!dup) fineAnchors.push(a);
+        _pushIfNewPtim(fineAnchors, a);
       }
 
       if (name === 'coda') {
         var a = _insertAnchorBefore(s, { _codaAnchor: true, jumpCoda: false });
-        // ptim 去重
-        var dup = false;
-        for (var j = 0; j < codaAnchors.length; j++) {
-          if (codaAnchors[j].ptim === a.ptim) { dup = true; break; }
-        }
-        if (!dup) codaAnchors.push(a);
+        _pushIfNewPtim(codaAnchors, a);
       }
 
       var isDC     = name === 'D.C.'       || name === 'dacapo';
@@ -637,6 +623,17 @@ function _walkAnchors(s, po, ctx) {
 //   - 攔截點 A（播放起點預走 anchor）
 //   - play_cont 最小複製（僅加入攔截點 B，其餘與 snd-1.js 原版相同）
 //   - [GEN] 版本守衛：play_cont 開頭 init po._gen + 遞增 + 守衛，過濾殘存排程
+//
+// patch 說明：
+//   do_tie / set_ctrl / play_cont / get_part 直接複製自 snd-1.js 原文，
+//   不做任何修改。僅在 play_cont 的四個位置插入修補：
+//     [GEN]   play_cont 開頭：init po._gen + 遞增世代號 + 版本守衛，
+//             過濾殘存的舊世代 setTimeout（集中於 play_cont，play_next 不介入）
+//     [B1]    noplay while 之後：處理播放起點本身落在 anchor 的情況
+//     [B2]    內層 while 的 s=s.ts_next 之後：中途遇到 anchor 時跳轉
+//     [STATE] NOTE/REST 排程時：把 repv/repn 快照到 sym，供 notehlight 讀取
+//     [resume] 還原 po.repv, po.repn
+//   未來 snd-1.js 更新時，只需重新複製這四個函數，再貼回 [GEN][B1][B2][STATE][resume] 即可。
 
 var orig_play_next = abc2svg.play_next;
 
@@ -664,18 +661,6 @@ abc2svg.play_next = function(po) {
     orig_play_next(po);
     return;
   }
-
-  // ── patch 說明 ────────────────────────────────────────────────
-  // do_tie / set_ctrl / play_cont / get_part 直接複製自 snd-1.js 原文，
-  // 不做任何修改。僅在 play_cont 的四個位置插入修補：
-  //   [GEN] play_cont 開頭：init po._gen + 遞增世代號 + 版本守衛，
-  //         過濾殘存的舊世代 setTimeout（集中於 play_cont，play_next 不介入）
-  //   [B1]  noplay while 之後：處理播放起點本身落在 anchor 的情況
-  //   [B2]  內層 while 的 s=s.ts_next 之後：中途遇到 anchor 時跳轉
-  //   [STATE] NOTE/REST 排程時：把 repv/repn 快照到 sym，供 notehlight 讀取
-  //   [resume] 還原 po.repv, po.repn
-  // 未來 snd-1.js 更新時，只需重新複製這四個函數，再貼回 [GEN][B1][B2][STATE][resume] 即可。
-  // ─────────────────────────────────────────────────────────────
 
   // ── 以下為 snd-1.js 原文（do_tie）────────────────────────────
   function do_tie(not_s,d){var i,s=not_s.s,C=abc2svg.C,v=s.v,end_time=s.time+s.dur,repv=po.repv
@@ -958,17 +943,19 @@ var abcSrc  = '',
     selx      = [0, 0],
     selx_sav  = [],
     currentSpeed = CFG.SPEED_DEFAULT,  // 當前播放速度（倍率）
-    _refreshToggleLabel = null,
     play = {
       playing:false, stopping:false, stopAt:0,
       si:null, ei:null, repv:0,
       abcplay:null, click:null,
-      lastNote:0, curNotes:new Set(), anchorIdx:0,
+      lastNote:0, curNotes:new Set(),
       isResume: false,
       // resumeRepv/resumeRepn：由 stopPlay(savePos=true) 設定，
       // play_next 末尾還原 po.repv/repn 後即清。
       resumeRepv: undefined, resumeRepn: undefined
     };
+
+// refreshToggleLabel：Section 8 IIFE 初始化時設定，此後直接呼叫
+var refreshToggleLabel = function() {};
 
 // ══════════════════════════════════════════
 // 5. 渲染核心（以 abcweb1-1.js 為基礎）
@@ -1103,7 +1090,6 @@ function dom_loaded() {
         if (typeof AbcPlay === 'function') {
           clearInterval(ti);
           play.abcplay = AbcPlay({ onend: onPlayEnd, onnote: notehlight });
-          updateStatus();
         }
       }, 100);
     }
@@ -1135,7 +1121,7 @@ function dom_loaded() {
 }
 
 // ══════════════════════════════════════════
-// 7. 工具函式
+// 6. 工具函式
 // ══════════════════════════════════════════
 function getSymIndex(el) {
   var cl = el && el.getAttribute && el.getAttribute('class');
@@ -1170,7 +1156,7 @@ function gsot(si) {
   var s = syms[si];
   if (!s) return null;
   var root = (s.p_v && s.p_v.sym) ? s.p_v.sym : s;
-  return gnrn(root) || gnrn(s);
+  return gnrn(root) || (root !== s ? gnrn(s) : null);
 }
 
 function get_se(si) {
@@ -1221,7 +1207,7 @@ function first_sym() {
 }
 
 // ══════════════════════════════════════════
-// 8. 點擊事件
+// 7. 點擊事件
 // ══════════════════════════════════════════
 function onLeftClick(evt) {
   if (ctxMenu.style.display === 'block') { ctxMenu.style.display = 'none'; return; }
@@ -1234,7 +1220,6 @@ function onLeftClick(evt) {
       stopPlay(false);          // 停止舊播放，不存斷點
       setsel(0, v);             // 設新 A 點
       setsel(1, 0);             // 清 B 點
-      play.anchorIdx = v;
       play.ei = null;           // 整首從新音符播到結尾
       play_tune(4);             // 從新音符立即起播
     } else {
@@ -1247,7 +1232,6 @@ function onLeftClick(evt) {
   // 左鍵 click 同時清除 B 點
   if (v) {
     setsel(0, v); setsel(1, 0);
-    play.anchorIdx = v; updateStatus();
     play.ei = null;   // 整首從此音符播到結尾
     play_tune(4);
   } else if (play.stopAt > 0) {
@@ -1264,10 +1248,10 @@ function onRightClick(evt) {
   var v = getSymIndex(evt.target);
   if (v) {
     // 右鍵點音符：設 B 點，永遠不開選單
-    setsel(1, v); updateStatus();
+    setsel(1, v);
     if (play.playing) {
       // 播放中即時調整終點
-      var a = play.anchorIdx || selx[0], b = v;
+      var a = selx[0], b = v;
       if (a && b) {
         if (b < a) { var t = a; a = b; b = t; }
         var newSi = get_se(a), newEi = get_ee_by_time(newSi, syms[b]);
@@ -1307,7 +1291,7 @@ function showCtxMenu(x, y) {
 }
 
 // ══════════════════════════════════════════
-// 9. 播放/暫停按鈕 + 循環開關
+// 8. 播放/暫停按鈕 + 循環開關
 // ══════════════════════════════════════════
 (function () {
   var loopIcon  = document.getElementById('loop-icon'),
@@ -1336,12 +1320,11 @@ function showCtxMenu(x, y) {
     }
   }
 
-  // ── 統一刷新入口（供外部呼叫）──────────────────────────────────
-  function refreshToggleLabel() {
+  // ── 統一刷新入口（賦值給外層 refreshToggleLabel 變數）────────────
+  refreshToggleLabel = function() {
     refreshPlayPauseBtn();
     refreshLoopIcon();
-  }
-  _refreshToggleLabel = refreshToggleLabel;
+  };
 
   // ── Play/Pause 按鈕 click ───────────────────────────────────────
   ppBtn.addEventListener('click', function () {
@@ -1361,14 +1344,14 @@ function showCtxMenu(x, y) {
   function setLoopMode() {
     loopMode  = CFG.LOOP_INFINITE;
     loopCount = 0;
-    refreshLoopIcon(); updateStatus();
+    refreshLoopIcon();
   }
 
   // ── 內部：關閉循環 ──────────────────────────────────────────────
   function clearLoopMode() {
     loopMode  = 0;
     loopCount = 0;
-    refreshLoopIcon(); updateStatus();
+    refreshLoopIcon();
   }
 
   // ── loop-icon click：直接 toggle loopMode ───────────────────────
@@ -1381,7 +1364,7 @@ function showCtxMenu(x, y) {
 }());
 
 // ══════════════════════════════════════════
-// 9b. 調速面板
+// 8b. 調速面板
 // ══════════════════════════════════════════
 (function () {
   var panel    = document.getElementById('speed-panel'),
@@ -1475,7 +1458,7 @@ function showCtxMenu(x, y) {
 }());
 
 // ══════════════════════════════════════════
-// 10. 選取高亮
+// 9. 選取高亮
 // ══════════════════════════════════════════
 function setOpacity(v, op, cls) {
   if (!v) return;
@@ -1495,12 +1478,7 @@ function setsel(idx, v) {
 }
 
 // ══════════════════════════════════════════
-// 11. 狀態列
-// ══════════════════════════════════════════
-function updateStatus() {}
-
-// ══════════════════════════════════════════
-// 12. 播放中音符高亮
+// 10. 播放中音符高亮
 // ══════════════════════════════════════════
 function notehlight(i, on) {
   if (on) {
@@ -1534,7 +1512,7 @@ function setNoteOp(i, on) {
 }
 
 // ══════════════════════════════════════════
-// 13. 播放控制工具
+// 11. 播放控制工具
 // ══════════════════════════════════════════
 function stopPlay(savePos) {
   play.stopping = true;
@@ -1554,7 +1532,7 @@ function onPlayEnd(repv) {
     // 循環模式：直接重播（loopMode !== 0 即啟用，無次數上限）
     if (loopMode !== 0) {
       ++loopCount;
-      if (_refreshToggleLabel) _refreshToggleLabel();
+      refreshToggleLabel();
       playStart(play.si, play.ei);
       return;
     }
@@ -1564,13 +1542,11 @@ function onPlayEnd(repv) {
   play.stopping = false;
   play.repv = repv;
   selx_sav[0] = selx[0]; selx_sav[1] = selx[1];
-  play.anchorIdx = selx[0];
-  updateStatus();
-  if (_refreshToggleLabel) _refreshToggleLabel();
+  refreshToggleLabel();
 }
 
 // ══════════════════════════════════════════
-// 14. 播放主函式
+// 12. 播放主函式
 // ══════════════════════════════════════════
 //
 // play_tune(what)
@@ -1660,13 +1636,12 @@ function playStart(si, ei) {
   if (!play.isResume) _resetAllJumpCtx();
   play.playing = true;
   play.isResume = false;
-  updateStatus();
-  if (_refreshToggleLabel) _refreshToggleLabel();
+  refreshToggleLabel();
   play.abcplay.play(si, ei, play.repv);
 }
 
 // ══════════════════════════════════════════
-// 15. 啟動
+// 13. 啟動
 // ══════════════════════════════════════════
 if (document.readyState === 'loading')
   document.addEventListener('DOMContentLoaded', dom_loaded, { once: true });
