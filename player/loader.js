@@ -286,13 +286,52 @@ function _symHasDeco(s, name) {
 
 /**
  * 在 refSym 之前插入一個 0 拍錨點並回傳。
- * 每次都建立新 anchor 串入 chain，依照呼叫順序排列。
+ *
+ * 方案 B：多聲部（V:1,2 等）時，同一個時間點（ptim）在 ts_next 鏈上
+ * 會有多個不同 voice 的 sym 節點。若只插在 refSym 的緊前面，其他
+ * voice 的 sym 在鏈上可能排在 anchor 之前，導致播放推進時直接越過
+ * anchor（例如 `|1 rep_s` 跳轉在 [B2] 觸發之前就發生）。
+ *
+ * 修正：往 ts_prev 方向回溯，找到第一個 ptim 嚴格小於 refSym.ptim
+ * 的節點（或鏈頭），然後把 anchor 插在該節點的 ts_next 位置，
+ * 確保 anchor 是同 ptim 群組的最前面節點，任何 voice 走到這個
+ * 時間點都一定先經過 anchor。
+ *
+ * 注意：已存在的 anchor（_anchor=true）與 ptim 相同的節點一律跳過，
+ * 讓多個 anchor 按照呼叫順序依序排列（ptim 去重由呼叫端 codaAnchors
+ * 等陣列保證，這裡不重複檢查）。
  */
 function _insertAnchorBefore(refSym, extra) {
   var C = abc2svg.C;
+  var ptim = refSym.ptim;
+
+  // 往前回溯，找到同 ptim 群組的最前節點之前的插入點。
+  // 停止條件：
+  //   1. 到達鏈頭（ts_prev 為 null/undefined）
+  //   2. 遇到 ptim 嚴格小於目標 ptim 的節點（非 anchor）
+  // 已插入的 anchor（_anchor=true）視為透明，繼續往前回溯。
+  var insertAfter = refSym.ts_prev;  // 預設：緊前面
+  var cur = refSym.ts_prev;
+  while (cur) {
+    if (cur._anchor) {
+      // 跳過已有的 anchor，繼續往前看
+      cur = cur.ts_prev;
+      continue;
+    }
+    if (cur.ptim === undefined || cur.ptim < ptim) {
+      // 找到 ptim 更早的節點，停止；anchor 插在 cur 之後
+      insertAfter = cur;
+      break;
+    }
+    // cur.ptim === ptim：還在同 ptim 群組，繼續往前
+    insertAfter = cur.ts_prev;  // 暫定插在更前面
+    cur = cur.ts_prev;
+  }
+  // cur === null 表示走到鏈頭，insertAfter 為 null，anchor 插到最前
+
   var anchor = {
     _anchor:  true,
-    ptim:     refSym.ptim,
+    ptim:     ptim,
     time:     refSym.time,
     pdur:     0,
     type:     C.SPACE,
@@ -307,12 +346,20 @@ function _insertAnchorBefore(refSym, extra) {
   if (extra) {
     for (var k in extra) anchor[k] = extra[k];
   }
-  // 永遠插在 refSym 的緊前面
-  var prev = refSym.ts_prev;
+
+  // 插入：anchor 放在 insertAfter 與 insertAfter.ts_next 之間
+  var insertBefore = insertAfter ? insertAfter.ts_next : refSym;
+  // 若 insertAfter 為 null，insertBefore 取鏈頭
+  if (!insertAfter) {
+    // 找鏈頭
+    insertBefore = refSym;
+    while (insertBefore.ts_prev) insertBefore = insertBefore.ts_prev;
+  }
+  var prev = insertBefore.ts_prev;
   anchor.ts_prev = prev;
-  anchor.ts_next = refSym;
+  anchor.ts_next = insertBefore;
   if (prev) prev.ts_next = anchor;
-  refSym.ts_prev = anchor;
+  insertBefore.ts_prev = anchor;
   return anchor;
 }
 
@@ -898,7 +945,7 @@ var abcSrc  = '',
       playing:false, stopping:false, stopAt:0,
       si:null, ei:null, repv:0,
       abcplay:null, click:null,
-      lastNote:0, curNote:0, anchorIdx:0,
+      lastNote:0, curNotes:new Set(), anchorIdx:0,
       isResume: false
     };
 
@@ -1436,10 +1483,11 @@ function updateStatus() {}
 // ══════════════════════════════════════════
 function notehlight(i, on) {
   if (on) {
-    if (play.curNote && play.curNote !== i)
-      setNoteOp(play.curNote, false);  // 清舊，共用同一套判斷
-    play.lastNote = play.curNote;
-    play.curNote  = i;
+    // 多聲部：同一時間點多個 istart 都可以亮，不清舊
+    play.lastNote = i;
+    play.curNotes.add(i);
+  } else {
+    play.curNotes.delete(i);
   }
   if (play.stopping && on) return;
   setNoteOp(i, on);
@@ -1449,7 +1497,7 @@ function setNoteOp(i, on) {
   var elts = document.getElementsByClassName('_' + i + '_');
   if (!elts || !elts.length) return;
   var isMarker   = (i === selx[0] || i === selx_sav[0] || i === selx[1] || i === selx_sav[1]);
-  var keepPaused = !on && play.stopAt > 0 && i === play.curNote;
+  var keepPaused = !on && play.stopAt > 0 && play.curNotes.has(i);
   var op = on ? 0.4 : (isMarker || keepPaused ? 0.4 : 0);
   for (var j = 0; j < elts.length; j++) elts[j].style.fillOpacity = op;
   if (on) {
@@ -1464,7 +1512,7 @@ function setNoteOp(i, on) {
 // ══════════════════════════════════════════
 function stopPlay(savePos) {
   play.stopping = true;
-  if (savePos) play.stopAt = play.curNote || play.lastNote;
+  if (savePos) play.stopAt = play.lastNote || 0;
   play.abcplay.stop();
 }
 
@@ -1567,7 +1615,7 @@ function play_tune(what) {
 
   // 狀態重設
   selx_sav[0] = selx[0]; selx_sav[1] = selx[1];
-  play.stopping = false; play.curNote = play.lastNote = 0;
+  play.stopping = false; play.curNotes = new Set(); play.lastNote = 0;
   playStart(si, ei);
 }
 window.play_tune = play_tune;
