@@ -263,138 +263,133 @@ function _symHasDeco(s, name) {
 // ── 錨點建立 ────────────────────────────────────────────────────
 
 /**
- * 在 refSym 之前插入一個 0 拍錨點並回傳。
+ * _insertAnchor(refSym, extra, mode)
  *
- * 方案 B：多聲部（V:1,2 等）時，同一個時間點（ptim）在 ts_next 鏈上
- * 會有多個不同 voice 的 sym 節點。若只插在 refSym 的緊前面，其他
- * voice 的 sym 在鏈上可能排在 anchor 之前，導致播放推進時直接越過
- * anchor（例如 `|1 rep_s` 跳轉在 [B2] 觸發之前就發生）。
+ * 統一錨點插入函式，支援三種模式：
  *
- * 修正：往 ts_prev 方向回溯，找到第一個 ptim 嚴格小於 refSym.ptim
- * 的節點（或鏈頭），然後把 anchor 插在該節點的 ts_next 位置，
- * 確保 anchor 是同 ptim 群組的最前面節點，任何 voice 走到這個
- * 時間點都一定先經過 anchor。
+ *   'before'     插在 refSym 同 ptim 群組的最前面（多聲部安全）。
+ *                回溯時遇到非 anchor 且 ptim 較小的節點即停，
+ *                遇到已有 anchor 也停（不穿透），保留呼叫順序。
+ *                用於 fine / segno / coda / jump anchor。
  *
- * 注意：已存在的 anchor（_anchor=true）與 ptim 相同的節點一律跳過，
- * 讓多個 anchor 按照呼叫順序依序排列（ptim 去重由呼叫端 codaAnchors
- * 等陣列保證，這裡不重複檢查）。
+ *   'chain-head' 插到整條鏈的最前面（tuneStartAnchor 用）。
+ *                ptim 取第一個有 ptim 值的節點。
+ *
+ *   'chain-tail' 插到整條鏈的最後面（tuneEndAnchor 用）。
+ *                ptim 取鏈尾節點的 ptim + pdur。
  */
-function _insertAnchorBefore(refSym, extra) {
+function _insertAnchor(refSym, extra, mode, rangeMin) {
   var C = abc2svg.C;
-  var ptim = refSym.ptim;
-
-  // 往前回溯，找到同 ptim 群組的最前節點之前的插入點。
-  // 停止條件：
-  //   1. 到達鏈頭（ts_prev 為 null/undefined）
-  //   2. 遇到 ptim 嚴格小於目標 ptim 的節點（非 anchor）
-  // 已插入的 anchor（_anchor=true）視為透明，繼續往前回溯。
-  var insertAfter = refSym.ts_prev;  // 預設：緊前面
-  var cur = refSym.ts_prev;
-  while (cur) {
-    if (cur._anchor) {
-      // 跳過已有的 anchor，繼續往前看
-      cur = cur.ts_prev;
-      continue;
-    }
-    if (cur.ptim === undefined || cur.ptim < ptim) {
-      // 找到 ptim 更早的節點，停止；anchor 插在 cur 之後
-      insertAfter = cur;
-      break;
-    }
-    // cur.ptim === ptim：還在同 ptim 群組，繼續往前
-    insertAfter = cur.ts_prev;  // 暫定插在更前面
-    cur = cur.ts_prev;
-  }
-  // cur === null 表示走到鏈頭，insertAfter 為 null，anchor 插到最前
-
   var anchor = {
     _anchor:  true,
-    ptim:     ptim,
-    time:     refSym.time,
     pdur:     0,
     type:     C.SPACE,
     noplay:   false,
-    v:        refSym.v,
-    p_v:      refSym.p_v,
-    seqst:    true,
-    istart:   refSym.istart,
     dur:      0,
-    bar_type: ''
+    bar_type: '',
+    seqst:    true
   };
   if (extra) {
     for (var k in extra) anchor[k] = extra[k];
   }
 
-  // 插入：anchor 放在 insertAfter 與 insertAfter.ts_next 之間
-  var insertBefore = insertAfter ? insertAfter.ts_next : refSym;
-  // 若 insertAfter 為 null，insertBefore 取鏈頭
-  if (!insertAfter) {
-    // 找鏈頭
-    insertBefore = refSym;
-    while (insertBefore.ts_prev) insertBefore = insertBefore.ts_prev;
+  var insertBefore;  // anchor 將插在此節點之前
+
+  if (mode === 'chain-head') {
+    // 找插入點：從 refSym 往 ts_prev 走，找到第一個 _anchor 節點，
+    // tuneStart 插在它之前，維護 anchor 鏈的正確 ts_prev/ts_next。
+    // 若沒有任何 anchor，則插在當前最前面的節點之前。
+    var s = refSym;
+    while (s && s.ptim === undefined) s = s.ts_next;
+    anchor.ptim = s ? s.ptim : 0;
+    anchor.v    = refSym.v;
+    anchor.p_v  = refSym.p_v;
+
+    // 往 ts_prev 走，找第一個已有的 _anchor
+    var cur = refSym;
+    var firstAnchor = null;
+    while (cur.ts_prev) {
+      cur = cur.ts_prev;
+      if (cur._anchor) { firstAnchor = cur; break; }
+    }
+    insertBefore = firstAnchor || cur;
+
+  } else if (mode === 'chain-tail') {
+    // 找整條鏈的鏈尾
+    var last = refSym;
+    while (last.ts_next) last = last.ts_next;
+    anchor.ptim  = last.ptim + (last.pdur || 0);
+    anchor.v     = last.v;
+    anchor.p_v   = last.p_v;
+    // 鏈尾直接接上，不走通用插入路徑
+    anchor.ts_prev = last;
+    anchor.ts_next = null;
+    last.ts_next   = anchor;
+    return anchor;
+
+  } else {
+    // mode === 'before'：插在 refSym 同 ptim 群組最前面
+    // 回溯停止條件（優先順序由上至下）：
+    //   1. 遇到 _tuneStartAnchor：絕對起點，不往前插
+    //   2. 遇到已有 anchor：保持呼叫順序
+    //   3. 遇到 tune 範圍外節點（istart < rangeMin）：不穿越邊界
+    //   4. 遇到 ptim 更早的節點：停在它後面
+    //   5. 遇到真正的 BAR（bar_type 非空）：停在它後面
+    var ptim = refSym.ptim;
+    anchor.ptim   = ptim;
+    anchor.time   = refSym.time;
+    anchor.v      = refSym.v;
+    anchor.p_v    = refSym.p_v;
+    anchor.istart = refSym.istart;
+
+    var insertAfter = refSym.ts_prev;
+    var cur = refSym.ts_prev;
+    while (cur) {
+      if (cur._tuneStartAnchor) {
+        // tuneStart 是絕對起點：永遠不往它之前插入
+        insertAfter = cur;
+        break;
+      }
+      if (cur._anchor) {
+        // 遇到已有 anchor：停在它後面，保持呼叫順序
+        insertAfter = cur;
+        break;
+      }
+      if (rangeMin !== undefined && cur.istart !== undefined && cur.istart < rangeMin) {
+        // 遇到 tune 範圍外的節點：停在它後面，不穿越邊界
+        insertAfter = cur;
+        break;
+      }
+      if (cur.ptim === undefined || cur.ptim < ptim) {
+        // 遇到 ptim 更早的節點：停在它後面
+        insertAfter = cur;
+        break;
+      }
+      if (cur.bar_type) {
+        // 遇到真正的 BAR（非空字串）：停在它後面
+        insertAfter = cur;
+        break;
+      }
+      // cur.ptim === ptim：同群組非 anchor 非 BAR，繼續往前
+      insertAfter = cur.ts_prev;
+      cur = cur.ts_prev;
+    }
+
+    if (insertAfter) {
+      insertBefore = insertAfter.ts_next;
+    } else {
+      // 走到鏈頭（不應發生，tuneStart 保護了邊界）
+      insertBefore = refSym;
+      while (insertBefore.ts_prev) insertBefore = insertBefore.ts_prev;
+    }
   }
-  var prev = insertBefore.ts_prev;
+
+  // 通用插入：anchor 插在 insertBefore 之前
+  var prev = insertBefore ? insertBefore.ts_prev : null;
   anchor.ts_prev = prev;
   anchor.ts_next = insertBefore;
   if (prev) prev.ts_next = anchor;
-  insertBefore.ts_prev = anchor;
-  return anchor;
-}
-
-/**
- * 在 chain 最前面（first 之前）插入曲首錨點。
- */
-function _insertTuneStartAnchor(first) {
-  var C = abc2svg.C;
-  var s = first;
-  while (s && s.ptim === undefined) s = s.ts_next;
-  var ptim = s ? s.ptim : 0;
-  var anchor = {
-    _anchor:          true,
-    _landAnchor:      true,
-    _tuneStartAnchor: true,
-    ptim:     ptim,
-    pdur:     0,
-    type:     C.SPACE,
-    noplay:   false,
-    dur:      0,
-    bar_type: '',
-    v:        first.v,
-    p_v:      first.p_v,
-    seqst:    true
-  };
-  var prev = first.ts_prev;
-  anchor.ts_prev = prev;
-  anchor.ts_next = first;
-  if (prev) prev.ts_next = anchor;
-  first.ts_prev = anchor;
-  return anchor;
-}
-
-/**
- * 在 chain 最後面插入曲尾錨點。
- */
-function _insertTuneEndAnchor(first) {
-  var C = abc2svg.C;
-  var last = first;
-  while (last.ts_next) last = last.ts_next;
-  var anchor = {
-    _anchor:         true,
-    _landAnchor:     true,
-    _tuneEndAnchor:  true,
-    ptim:     last.ptim + (last.pdur || 0),
-    pdur:     0,
-    type:     C.SPACE,
-    noplay:   false,
-    dur:      0,
-    bar_type: '',
-    v:        last.v,
-    p_v:      last.p_v,
-    seqst:    true
-  };
-  anchor.ts_prev = last;
-  anchor.ts_next = null;
-  last.ts_next   = anchor;
+  if (insertBefore) insertBefore.ts_prev = anchor;
   return anchor;
 }
 
@@ -418,6 +413,28 @@ function _tuneIstartRange(first) {
     s = s.ts_next;
   }
   return lo <= hi ? [lo, hi] : null;
+}
+
+/**
+ * 判斷 jumpSym 是否在某個 repeat 括弧（|: ... :|）內。
+ *
+ * 方法：往 ts_next 方向掃，找到第一個帶 rep_p 的 BAR（即 :|）。
+ *   - rep_p 是 ToAudio.add() 在 :| 上設定的指標，指向對應的 |:。
+ *   - 若 rep_p.ptim <= jumpSym.ptim，表示這個 |: 在 jump 之前，
+ *     jump 確實落在這對 |: ... :| 括弧內 → 回傳 true。
+ *   - 若找不到任何帶 rep_p 的 BAR，或找到的 :| 其 rep_p.ptim > jumpSym.ptim
+ *     （屬於更後面的 repeat），→ 回傳 false。
+ */
+function _isInsideRepeat(jumpSym) {
+  var s = jumpSym.ts_next;
+  while (s) {
+    if (s.type === abc2svg.C.BAR && s.rep_p) {
+      // 找到 :| ，確認對應的 |: 在 jump 之前
+      return s.rep_p.ptim <= jumpSym.ptim;
+    }
+    s = s.ts_next;
+  }
+  return false;
 }
 
 /**
@@ -446,9 +463,8 @@ function _buildJumpCtx(first) {
   });
   if (!hasJump) return null;
 
-  // 建立曲首 / 曲尾錨點
-  var tuneStartAnchor = _insertTuneStartAnchor(first);
-  var tuneEndAnchor   = _insertTuneEndAnchor(first);
+  // 曲尾錨點先插（鏈尾，不影響其他 anchor 的插入順序）
+  var tuneEndAnchor = _insertAnchor(first, { _landAnchor: true, _tuneEndAnchor: true }, 'chain-tail');
 
   var segnoAnchors = [];
   var fineAnchors  = [];
@@ -456,6 +472,17 @@ function _buildJumpCtx(first) {
   var jumpAnchors  = [];
 
   // 依照 a_dd 書寫順序插入 anchor（同一 sym 上多個 deco 保持原始順序）
+  // _findMainChainRef：從 first 往 ts_next 找第一個 ptim === targetPtim 的節點，
+  // 確保插入參考點一定在主鏈上，不依賴 ts_prev 回溯。
+  function _findMainChainRef(targetPtim) {
+    var s = first;
+    while (s) {
+      if (s.ptim === targetPtim && !s._anchor) return s;
+      s = s.ts_next;
+    }
+    return null;
+  }
+
   decoList.forEach(function(s) {
     if (!s.a_dd) return;
     for (var i = 0; i < s.a_dd.length; i++) {
@@ -463,17 +490,20 @@ function _buildJumpCtx(first) {
       if (!name) continue;
 
       if (name === 'segno') {
-        var a = _insertAnchorBefore(s, { _landAnchor: true, _segnoAnchor: true });
+        var ref = _findMainChainRef(s.ptim) || s;
+        var a = _insertAnchor(ref, { _landAnchor: true, _segnoAnchor: true }, 'before', range[0]);
         _pushIfNewPtim(segnoAnchors, a);
       }
 
       if (name === 'fine') {
-        var a = _insertAnchorBefore(s, { _landAnchor: true, _fineAnchor: true, jumpFine: false });
+        var ref = _findMainChainRef(s.ptim) || s;
+        var a = _insertAnchor(ref, { _landAnchor: true, _fineAnchor: true, jumpFine: false }, 'before', range[0]);
         _pushIfNewPtim(fineAnchors, a);
       }
 
       if (name === 'coda') {
-        var a = _insertAnchorBefore(s, { _codaAnchor: true, jumpCoda: false });
+        var ref = _findMainChainRef(s.ptim) || s;
+        var a = _insertAnchor(ref, { _codaAnchor: true, jumpCoda: false }, 'before', range[0]);
         _pushIfNewPtim(codaAnchors, a);
       }
 
@@ -485,24 +515,33 @@ function _buildJumpCtx(first) {
       var isDSfine = name === 'D.S.alfine';
       var isAnyJump = isDC || isDS || isDCcoda || isDScoda || isDCfine || isDSfine;
       if (isAnyJump) {
+        var inRepeat = _isInsideRepeat(s);
         var extra = {
           _jumpAnchor: true,
-          jumpDC:   isDC   || isDCcoda || isDCfine,
-          jumpDS:   isDS   || isDScoda || isDSfine,
+          _inRepeat:   inRepeat,
+          _isDC:       isDC  || isDCcoda || isDCfine,
+          _isDS:       isDS  || isDScoda || isDSfine,
+          jumpDC:   (isDC   || isDCcoda || isDCfine) && !inRepeat,
+          jumpDS:   (isDS   || isDScoda || isDSfine) && !inRepeat,
           jumpCoda: isDCcoda || isDScoda,
           jumpFine: false,
           _init: {
-            jumpDC:   isDC   || isDCcoda || isDCfine,
-            jumpDS:   isDS   || isDScoda || isDSfine,
+            jumpDC:   (isDC   || isDCcoda || isDCfine) && !inRepeat,
+            jumpDS:   (isDS   || isDScoda || isDSfine) && !inRepeat,
             jumpCoda: isDCcoda || isDScoda,
             jumpFine: false
           }
         };
-        var a = _insertAnchorBefore(s, extra);
+        var ref = _findMainChainRef(s.ptim) || s;
+        var a = _insertAnchor(ref, extra, 'before', range[0]);
         if (jumpAnchors.indexOf(a) < 0) jumpAnchors.push(a);
       }
     }
   });
+
+  // tuneStartAnchor 最後插入，找 tune range 內的第一個節點之前插入，
+  // 不走到絕對鏈頭，避免把已插好的 fine/segno anchor 甩出鏈外。
+  var tuneStartAnchor = _insertAnchor(first, { _landAnchor: true, _tuneStartAnchor: true }, 'chain-head', range[0]);
 
   // 按 ptim 排序 codaAnchors
   codaAnchors.sort(function(a,b) { return a.ptim - b.ptim; });
@@ -528,6 +567,15 @@ function _handleAnchor(s, po, ctx) {
   var target = null;
 
   if (s._jumpAnchor) {
+    // 方案 C（修正版）：若 anchor 在 repeat 括弧內，且目前是第一次 pass
+    // （po.repn === false 表示尚未回彈過，即還在第一次通過），
+    // 則 enable 而不跳，等第二次路過再執行跳轉。
+    if (s._inRepeat && !po.repn) {
+      if (s._isDC) s.jumpDC = true;
+      if (s._isDS) s.jumpDS = true;
+      return null;  // 第一次：pass，不跳
+    }
+
     if (s.jumpDC) {
       s.jumpDC = false;
       ctx.fineAnchors.forEach(function(a) { a.jumpFine = true; });
@@ -748,7 +796,8 @@ abc2svg.play_next = function(po) {
           s2=var_end(s)
           po.repn=false
           if(s.bar_type.slice(-1)==':')
-            po.repv=1}}
+            po.repv=1
+          }}
       if(s.rep_s){s2=s.rep_s[po.repv]
         if(s2){po.repn=false
           if(s2==s)
