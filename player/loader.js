@@ -36,8 +36,8 @@
  *   </script>
  *
  * 本檔負責：
- *   1. 注入 CSS（垂直浮動工具列、ctxMenu 樣式）
- *   2. 建立 DOM 結構（#fab-toolbar、#target、ctxMenu）
+ *   1. 注入 CSS（浮動工具列樣式）
+ *   2. 建立 DOM 結構（#fab-toolbar、#target）
  *   3. 修補 abc2svg.play_next，支援 D.C. / D.S. / Coda / Fine 跳轉
  *      - play_cont 複製版加入 _playGeneration 版本守衛，防止殘存排程復活
  *   4. 渲染 ABC → SVG
@@ -64,7 +64,7 @@ var CFG = {
   // ── UI 圖示符號 ──────────────────────────
   ICON_PLAY:     '▶',   // 播放按鈕（idle 狀態）
   ICON_PAUSE:    '⏸',   // 暫停按鈕（playing 狀態）
-  ICON_RESUME:   '⏯',   // 繼續按鈕（stopAt > 0 狀態）
+  ICON_RESUME:   '⏯',   // 繼續按鈕（paused 狀態）
   ICON_LOOP:     '↺',   // 循環模式狀態指示（不可按）
   ICON_NOLOOP:   '➔',   // 非循環模式狀態指示（不可按）
   ICON_INFINITE: '♾️',  // 無限循環
@@ -103,11 +103,6 @@ var CFG = {
     "#dright{display:none}",
     ".abc-slot{display:block;width:100%;margin:0 auto}",
     ".abc-slot svg{display:block;width:100%;height:auto}",
-    "#ctxMenu{position:fixed;display:none;z-index:200;background:var(--panel);border:1px solid var(--muted);border-radius:6px;box-shadow:0 6px 24px rgba(26,18,11,0.18);overflow:hidden;min-width:130px;font-size:.85rem}",
-    "#ctxMenu ul{list-style:none}",
-    "#ctxMenu li{padding:9px 18px;cursor:pointer;color:var(--ink);transition:background .12s;white-space:nowrap}",
-    "#ctxMenu li:hover{background:var(--accent);color:#fff}",
-    "#ctxMenu li+li{border-top:1px solid rgba(194,169,122,.3)}",
     ".abcr{fill:#8b3a3a;fill-opacity:0;z-index:15}",
     ".abcr.sel{fill:#3cc878}",
     ".abcr.selb{fill:#e07b00}",
@@ -170,19 +165,10 @@ var CFG = {
     '      <text x="300" y="40" font-family="serif" font-size="14" fill="#c2a97a">載入中…</text>',
     '    </svg>',
     '  </div>',
-    '</div>',
-    '<div id="ctxMenu">',
-    '  <ul>',
-    '    <li id="cmpt">' + CFG.ICON_PLAY + ' 播放</li>',
-    '    <li id="cmpc">' + CFG.ICON_RESUME + ' 繼續</li>',
-    '  </ul>',
     '</div>'
   ].join('\n'));
 
   document.getElementById('errbanner').onclick = function () { this.style.display = 'none'; };
-  // 「播放」：有 B 點 → 選段(1)，無 B 點 → 整首(0)
-  document.getElementById('cmpt').onclick = function () { play_tune(selx[1] ? 1 : 0); };
-  document.getElementById('cmpc').onclick = function () { play_tune(3); };
 
   // ── 調速面板（底部 sheet，獨立插入 body 末端）──────────────────
   var _presetHtml = CFG.SPEED_PRESETS.map(function(v) {
@@ -626,14 +612,16 @@ function _walkAnchors(s, po, ctx) {
 //
 // patch 說明：
 //   do_tie / set_ctrl / play_cont / get_part 直接複製自 snd-1.js 原文，
-//   不做任何修改。僅在 play_cont 的四個位置插入修補：
-//     [GEN]   play_cont 開頭：init po._gen + 遞增世代號 + 版本守衛，
-//             過濾殘存的舊世代 setTimeout（集中於 play_cont，play_next 不介入）
-//     [B1]    noplay while 之後：處理播放起點本身落在 anchor 的情況
-//     [B2]    內層 while 的 s=s.ts_next 之後：中途遇到 anchor 時跳轉
-//     [STATE] NOTE/REST 排程時：把 repv/repn 快照到 sym，供 notehlight 讀取
-//     [resume] 還原 po.repv, po.repn
-//   未來 snd-1.js 更新時，只需重新複製這四個函數，再貼回 [GEN][B1][B2][STATE][resume] 即可。
+//   不做任何修改。僅在 play_cont 的以下位置插入修補：
+//     [GEN]    play_cont 開頭：init po._gen + 遞增世代號 + 版本守衛，
+//              過濾殘存的舊世代 setTimeout
+//     [B1]     noplay while 之後：處理播放起點本身落在 anchor 的情況
+//     [B2]     內層 while 的 s=s.ts_next 之後：中途遇到 anchor 時跳轉
+//     [pause]  NOTE/REST 排程：onnote on/off 存入 po._onnoteTimouts（帶 at/on）
+//     [pause]  批次重置：po._onnoteTimouts=[] 與 po.timouts=[] 同步
+//     [pause]  play_cont 末尾：記錄 po._nextT 供 pausePlay 計算 _nextContAt
+//     [pause]  play_next 末尾：存 po._play_cont reference 供 resumePlay 呼叫
+//   未來 snd-1.js 更新時，重新複製四個函數後貼回上述 [GEN][B1][B2][pause] 即可。
 
 var orig_play_next = abc2svg.play_next;
 
@@ -703,7 +691,7 @@ abc2svg.play_next = function(po) {
       po.v_c[p_v.v]=i}
     po.p_v[s2.v]=true}
 
-  // ── 以下為 snd-1.js 原文（play_cont）+ [GEN][B1][B2][STATE][resume] patch ──
+  // ── 以下為 snd-1.js 原文（play_cont）+ [GEN][B1][B2][pause] patch ──
   function play_cont(po){var d,i,st,m,note,g,s2,t,maxt,now,p_v,C=abc2svg.C,s=po.s_cur
 
     // ── [GEN] 首次進入（po 剛建立）：init + 遞增世代號
@@ -713,8 +701,9 @@ abc2svg.play_next = function(po) {
       po._gen = ++_playGeneration;
     }
     if(po._gen !== _playGeneration){
-      po.timouts.forEach(function(id){ clearTimeout(id); });  // 清除已排的音符
+      po.timouts.forEach(function(id){ clearTimeout(id); });
       po.timouts = [];
+      if(po._onnoteTimouts){ po._onnoteTimouts.forEach(function(e){ clearTimeout(e.id); }); po._onnoteTimouts=[]; }
       return;
     }
     // ── [GEN] end ─────────────────────────────────────────────────
@@ -750,6 +739,8 @@ abc2svg.play_next = function(po) {
       po.conf.new_speed=0}
     maxt=t+po.tgen
     po.timouts=[]
+    // ── [pause] po._onnoteTimouts 與 po.timouts 同步重置 ──────────
+    po._onnoteTimouts=[]
     while(1){switch(s.type){case C.BAR:s2=null
       if(s.rep_p){po.repv++
         if(!po.repn&&(!s.rep_v||po.repv<=s.rep_v.length)){s2=s.rep_p
@@ -804,14 +795,15 @@ abc2svg.play_next = function(po) {
           po.note_run(po,s,note.midi,t,note.tie_e?do_tie(note,d):d)}}
         if(po.onnote&&s.istart){i=s.istart
           st=(t-now)*1000
-          // ── [STATE] 排程當下把 repv/repn 快照到 sym，
-          // notehlight(on=true) 觸發時再讀取，確保精確對應使用者聽到的位置。
-          s._snapRepv=po.repv; s._snapRepn=po.repn;
-          // ── [STATE] end ───────────────────────────────────────
-          po.timouts.push(setTimeout(po.onnote,st,i,true))
+          // ── [pause] onnote on/off 存入 po._onnoteTimouts（帶觸發絕對時間 at、on 旗標）
+          // po.timouts 只存 play_cont reschedule，相容 Audio5.stop() 原版。
+          // pause 時兩者分別處理：play_cont 丟棄，onnote 存下剩餘 delay 供 resume 重排。
+          if(!po._onnoteTimouts) po._onnoteTimouts=[]
+          po._onnoteTimouts.push({id:setTimeout(po.onnote,st,i,true),at:now+st/1000,i:i,on:true})
           if(d>2)
             d-=.1
-          setTimeout(po.onnote,st+d*1000,i,false)}
+          var doff=st+d*1000
+          po._onnoteTimouts.push({id:setTimeout(po.onnote,doff,i,false),at:now+doff/1000,i:i,on:false})}
         break}}
     while(1){if(!s||s==po.s_end||!s.ts_next||s.ts_next==po.s_end||po.stop){if(po.onend)
         setTimeout(po.onend,(t-now+d)*1000,po.repv)
@@ -841,6 +833,8 @@ abc2svg.play_next = function(po) {
     if(t>maxt)
       break}
   po.s_cur=s
+  // ── [pause] 記錄下一批 play_cont 應觸發的絕對時間，供 pausePlay 使用 ──
+  po._nextT = t;
   po.timouts.push(setTimeout(play_cont,(t-now)*1000
     -300,po))}
 
@@ -861,20 +855,11 @@ abc2svg.play_next = function(po) {
   po.stim=po.get_time(po)+.3
     -po.s_cur.ptim/po.conf.speed
   po.p_v=[]
-  // ── [resume] 時還原 repv/repn（最小化）─────────────────────────
-  // play.resumeRepv/resumeRepn 由 stopPlay 從 abc2svg._play_state 讀取後存入；
-  // _play_state 是 notehlight(on=true) 在音符發聲瞬間精確記錄的快照。
-  // 用完即清，天然一次性，不需要額外全域物件或 codaState/jumpState 快照。
-  if (play.resumeRepv !== undefined) {
-    po.repv = play.resumeRepv;
-    po.repn = play.resumeRepn || false;
-    play.resumeRepv = undefined;
-    play.resumeRepn = undefined;
-  } else {
-    if(!po.repv)
-      po.repv=1
-  }
-  // ── [resume] end ───────────────────────────────────────────────
+  // ── [pause] 把 play_cont reference 存到 po，供 resumePlay 直接呼叫 ──
+  po._play_cont = play_cont;
+  // ── [pause] end ────────────────────────────────────────────────
+  if(!po.repv)
+    po.repv=1
   play_cont(po)
 };
 
@@ -937,21 +922,22 @@ function _patchTune(first) {
 // ══════════════════════════════════════════
 var abcSrc  = '',
     syms    = [],
-    ctxMenu = document.getElementById('ctxMenu'),
     loopMode  = 0,
     loopCount = 0,
     selx      = [0, 0],
     selx_sav  = [],
     currentSpeed = CFG.SPEED_DEFAULT,  // 當前播放速度（倍率）
     play = {
-      playing:false, stopping:false, stopAt:0,
+      playing:false, stopping:false,
       si:null, ei:null, repv:0,
-      abcplay:null, click:null,
+      abcplay:null,
       lastNote:0, curNotes:new Set(),
-      isResume: false,
-      // resumeRepv/resumeRepn：由 stopPlay(savePos=true) 設定，
-      // play_next 末尾還原 po.repv/repn 後即清。
-      resumeRepv: undefined, resumeRepn: undefined
+      // ── pause/resume ───────────────────────────────────────────
+      // _pausedPo: paused 時存下的 po reference；null = not paused。
+      //            用 play._pausedPo !== null 判斷 paused 狀態，
+      //            不另設 paused boolean，確保兩者永遠同步。
+      // _resumeGen: resume 世代號，防止快速 pause/resume race condition
+      _pausedPo: null, _resumeGen: 0
     };
 
 // refreshToggleLabel：Section 8 IIFE 初始化時設定，此後直接呼叫
@@ -1163,13 +1149,6 @@ function get_se(si) {
   return syms[si] || null;
 }
 
-function gsot_tune_start(si) {
-  var s = syms[si];
-  if (!s) return null;
-  while (s.ts_prev) s = s.ts_prev;
-  return gnrn(s);
-}
-
 function next_playable(s) {
   var C = abc2svg.C;
   s = s.ts_next;
@@ -1210,20 +1189,37 @@ function first_sym() {
 // 7. 點擊事件
 // ══════════════════════════════════════════
 function onLeftClick(evt) {
-  if (ctxMenu.style.display === 'block') { ctxMenu.style.display = 'none'; return; }
-
   var v = getSymIndex(evt.target);
+
+  if (play._pausedPo !== null) {
+    if (v) {
+      // paused 中點音符：取消 pause，從該音符重新播
+      var po = play._pausedPo;
+      if (po && po.ac) po.ac.resume();
+      play._pausedPo = null;
+      play.playing   = false;  // 讓 play_tune 可以進入
+      play.stopping  = false;
+      setsel(0, v); setsel(1, 0);
+      play.ei = null;
+      play_tune(4);
+    } else {
+      // paused 中點空白：resume
+      resumePlay();
+    }
+    return;
+  }
 
   if (play.playing && !play.stopping) {
     if (v) {
       // 播放中點到音符：直接切換起播位置（殘存問題由 _playGeneration 守衛解決）
-      stopPlay(false);          // 停止舊播放，不存斷點
+      stopPlay();                // 停止舊播放
       setsel(0, v);             // 設新 A 點
       setsel(1, 0);             // 清 B 點
       play.ei = null;           // 整首從新音符播到結尾
       play_tune(4);             // 從新音符立即起播
     } else {
-      stopPlay(true);           // 點空白：正常暫停，存斷點
+      // 點空白：pause（新構想，保留 po）
+      pausePlay();
     }
     return;
   }
@@ -1234,11 +1230,8 @@ function onLeftClick(evt) {
     setsel(0, v); setsel(1, 0);
     play.ei = null;   // 整首從此音符播到結尾
     play_tune(4);
-  } else if (play.stopAt > 0) {
-    play_tune(3);
   } else {
-    play.click = null;  // 非右鍵觸發，清除上次右鍵殘留
-    play.repv = 0; play.stopAt = 0; loopCount = 0;
+    play.repv = 0; loopCount = 0;
     play_tune(0);
   }
 }
@@ -1246,48 +1239,19 @@ function onLeftClick(evt) {
 function onRightClick(evt) {
   evt.preventDefault();
   var v = getSymIndex(evt.target);
-  if (v) {
-    // 右鍵點音符：設 B 點，永遠不開選單
-    setsel(1, v);
-    if (play.playing) {
-      // 播放中即時調整終點
-      var a = selx[0], b = v;
-      if (a && b) {
-        if (b < a) { var t = a; a = b; b = t; }
-        var newSi = get_se(a), newEi = get_ee_by_time(newSi, syms[b]);
-        if (abc2svg._current_po) abc2svg._current_po.s_end = newEi;
-        play.ei = newEi;
-      }
+  if (!v) return;
+  // 右鍵點音符：設 B 點
+  setsel(1, v);
+  if (play.playing) {
+    // 播放中即時調整終點
+    var a = selx[0], b = v;
+    if (a && b) {
+      if (b < a) { var t = a; a = b; b = t; }
+      var newSi = get_se(a), newEi = get_ee_by_time(newSi, syms[b]);
+      if (abc2svg._current_po) abc2svg._current_po.s_end = newEi;
+      play.ei = newEi;
     }
-    return;  // 不開選單
   }
-  // 右鍵點空白：開選單
-  play.click = { svg: evt.target };
-  var svgEl = evt.target.closest('svg');
-  if (svgEl) {
-    var first = svgEl.querySelector('.abcr');
-    var m = first && first.getAttribute('class').match(/_(\d+)_/);
-    if (m) play.click.tuneFirst = Number(m[1]);
-  }
-  showCtxMenu(evt.clientX, evt.clientY);
-}
-
-function setEnabled(el, on) {
-  el.style.opacity       = on ? '1'  : '0.35';
-  el.style.pointerEvents = on ? ''   : 'none';
-}
-
-function showCtxMenu(x, y) {
-  setEnabled(document.getElementById('cmpt'), !play.playing);
-  setEnabled(document.getElementById('cmpc'), !play.playing && play.stopAt > 0);
-  ctxMenu.style.display = 'block';
-  requestAnimationFrame(function () {
-    var mw = ctxMenu.offsetWidth, mh = ctxMenu.offsetHeight;
-    if (x + mw > window.innerWidth)  x = window.innerWidth  - mw - 8;
-    if (y + mh > window.innerHeight) y = window.innerHeight - mh - 8;
-    ctxMenu.style.left = x + 'px';
-    ctxMenu.style.top  = y + 'px';
-  });
 }
 
 // ══════════════════════════════════════════
@@ -1299,10 +1263,10 @@ function showCtxMenu(x, y) {
 
   // ── Play/Pause 按鈕顯示更新 ─────────────────────────────────────
   function refreshPlayPauseBtn() {
-    if (play.playing) {
-      ppBtn.textContent = CFG.ICON_PAUSE;
-    } else if (play.stopAt > 0) {
+    if (play._pausedPo !== null) {
       ppBtn.textContent = CFG.ICON_RESUME;
+    } else if (play.playing) {
+      ppBtn.textContent = CFG.ICON_PAUSE;
     } else {
       ppBtn.textContent = CFG.ICON_PLAY;
     }
@@ -1328,14 +1292,15 @@ function showCtxMenu(x, y) {
 
   // ── Play/Pause 按鈕 click ───────────────────────────────────────
   ppBtn.addEventListener('click', function () {
-    if (play.playing) {
-      stopPlay(true);
-    } else if (play.stopAt > 0) {
-      play_tune(3);
+    if (play._pausedPo !== null) {
+      // paused 狀態：resume（直接接續，不走 play_next）
+      resumePlay();
+    } else if (play.playing) {
+      // playing 狀態：pause（凍結 ac，保留 po）
+      pausePlay();
     } else {
-      play.click = null;
       play.si = play.si || first_sym();
-      play.repv = 0; play.stopAt = 0; loopCount = 0;
+      play.repv = 0; loopCount = 0;
       play_tune(0);
     }
   });
@@ -1477,19 +1442,23 @@ function setsel(idx, v) {
   selx[idx] = v;
 }
 
+// resume 後清除所有播放高亮，由下一批 onnote 自然接管
+function clearAllHighlight() {
+  play.curNotes.forEach(function(i) { setNoteOp(i, false); });
+  play.curNotes = new Set();
+}
+
 // ══════════════════════════════════════════
 // 10. 播放中音符高亮
 // ══════════════════════════════════════════
 function notehlight(i, on) {
+  // ── [pause-guard] paused 中 on 回呼已在 task queue 排隊清不掉，在此攔截 ──
+  // off 回呼不攔截：讓音符暗掉是正確的，避免殘留高亮。
+  if (play._pausedPo && on) return;
   if (on) {
     // 多聲部：同一時間點多個 istart 都可以亮，不清舊
     play.lastNote = i;
     play.curNotes.add(i);
-    // [STATE] 音符發聲瞬間，從 sym 讀取排程時存入的 repv/repn 快照，
-    // 這是唯一精確對應「使用者聽到位置」的時機。
-    var _s = syms[i];
-    if (_s && _s._snapRepv !== undefined)
-      abc2svg._play_state = { repv: _s._snapRepv, repn: _s._snapRepn };
   } else {
     play.curNotes.delete(i);
   }
@@ -1500,9 +1469,8 @@ function notehlight(i, on) {
 function setNoteOp(i, on) {
   var elts = document.getElementsByClassName('_' + i + '_');
   if (!elts || !elts.length) return;
-  var isMarker   = (i === selx[0] || i === selx_sav[0] || i === selx[1] || i === selx_sav[1]);
-  var keepPaused = !on && play.stopAt > 0 && play.curNotes.has(i);
-  var op = on ? 0.4 : (isMarker || keepPaused ? 0.4 : 0);
+  var isMarker = (i === selx[0] || i === selx_sav[0] || i === selx[1] || i === selx_sav[1]);
+  var op = on ? 0.4 : (isMarker ? 0.4 : 0);
   for (var j = 0; j < elts.length; j++) elts[j].style.fillOpacity = op;
   if (on) {
     var r = elts[0].getBoundingClientRect();
@@ -1514,21 +1482,152 @@ function setNoteOp(i, on) {
 // ══════════════════════════════════════════
 // 11. 播放控制工具
 // ══════════════════════════════════════════
-function stopPlay(savePos) {
-  play.stopping = true;
-  if (savePos) {
-    play.stopAt = play.lastNote || 0;
-    // 從 _play_state（notehlight 在音符發聲瞬間更新的快照）讀取，
-    // 確保 repv/repn 精確對應使用者聽到的位置，而非 play_cont 批次末尾的值。
-    var ps = abc2svg._play_state;
-    play.resumeRepv = ps ? (ps.repv || 1) : 1;
-    play.resumeRepn = ps ? (ps.repn || false) : false;
+
+/**
+ * pausePlay()
+ *
+ * 不破壞 po 狀態，直接凍結 AudioContext。
+ *
+ * 1. ac.suspend()       — 凍結 WebAudio 時鐘；已排進佇列的 Buffer Source 暫停發聲
+ * 2. clearTimeout       — 清除 po.timouts（play_cont reschedule）
+ *                         清除 po._onnoteTimouts（onnote on/off）
+ * 3. _nextContAt        — 記錄 play_cont 原本應觸發的絕對時間，resume 時重排
+ * 4. _pausedOnnotes     — 存下尚未觸發的 onnote on/off（at > nowAc），resume 時重排
+ * 5. 高亮               — clearAllHighlight() 清殘留，setNoteOp(lastNote) 補亮暫停位置
+ *
+ * po.stim / po.s_cur / po.repv / po.repn / anchor 狀態完全不動。
+ */
+function pausePlay() {
+  var po = abc2svg._current_po;
+  if (!po) return;
+  var ac = po.ac;
+  if (!ac) return;
+
+  // 凍結 WebAudio 時鐘
+  if (ac.state === 'running') ac.suspend();
+  // suspend 後 currentTime 凍結，此值即暫停點
+  var nowAc = ac.currentTime;
+
+  // 記錄 play_cont 下一次應觸發的絕對時間（t - 0.3）
+  play._nextContAt = (po._nextT !== undefined) ? (po._nextT - 0.3) : null;
+
+  // 清除 play_cont reschedule
+  po.timouts.forEach(function(id) { clearTimeout(id); });
+  po.timouts = [];
+
+  // 清除 onnote on/off，存下全部 entry 供 resume 重排
+  // 不在此用 e.at > nowAc 過濾：高速播放接近曲尾時 nowAc 誤判範圍大，
+  // 改由 resumePlay remaining > 0 決定是否重排，已過期的立刻補亮（delay=0）。
+  play._pausedOnnotes = [];
+  if (po._onnoteTimouts) {
+    po._onnoteTimouts.forEach(function(e) {
+      clearTimeout(e.id);
+      play._pausedOnnotes.push({at:e.at, i:e.i, on:e.on});
+    });
+    po._onnoteTimouts = [];
   }
+
+  // 清殘留高亮，補亮暫停位置
+  clearAllHighlight();
+  if (play.lastNote) setNoteOp(play.lastNote, true);
+
+  play.stopping  = false;
+  play._pausedPo = po;
+  refreshToggleLabel();
+}
+
+/**
+ * resumePlay()
+ *
+ * 恢復 AudioContext，重排 onnote on/off 與 play_cont reschedule，不走 play_next。
+ *
+ * 1. _resumeGen guard  — 防止快速 pause/resume race condition：
+ *                        ac.resume() 是非同步，若 then() 執行前又 pause，
+ *                        世代號不符則放棄，不重排任何 setTimeout
+ * 2. clearAllHighlight() — 清除 pause 補亮的 lastNote
+ * 3. ac.resume()        — 恢復 WebAudio 時鐘；已凍結的 Buffer Source 自動接續
+ * 4. 重排 onnote on/off — 用 at - ac.currentTime 算剩餘 delay，重新 setTimeout
+ * 5. 重排 play_cont     — 用 _nextContAt 算剩餘 delay，重新 setTimeout
+ *
+ * po.s_cur / po.stim / repv / repn / anchor 完全不動，無丟失，無重疊。
+ */
+function resumePlay() {
+  var po = play._pausedPo;
+  if (!po) return;
+  var ac = po.ac;
+  if (!ac) return;
+
+  play._pausedPo = null;
+
+  // ── [優化4] 遞增世代號，then() 內比對，防止快速 pause/resume race condition ──
+  var myGen = ++play._resumeGen;
+
+  // 清除 pause 補亮的 lastNote
+  clearAllHighlight();
+
+  ac.resume().then(function() {
+    // ── [優化4] 世代號不符：then() 執行前已再次 pause，放棄本次 resume ──
+    if (play._resumeGen !== myGen) return;
+
+    // 重排尚未觸發的 onnote on/off
+    if (play._pausedOnnotes) {
+      if (!po._onnoteTimouts) po._onnoteTimouts = [];
+      play._pausedOnnotes.forEach(function(e) {
+        var remaining = (e.at - ac.currentTime) * 1000;
+        if (remaining > 0)
+          po._onnoteTimouts.push({id:setTimeout(po.onnote,remaining,e.i,e.on), at:e.at, i:e.i, on:e.on});
+      });
+      play._pausedOnnotes = [];
+    }
+
+    // 重排 play_cont reschedule
+    var delay = 0;
+    if (play._nextContAt !== null && play._nextContAt !== undefined)
+      delay = Math.max(0, (play._nextContAt - ac.currentTime) * 1000);
+    play._nextContAt = null;
+    po.timouts.push(setTimeout(po._play_cont, delay, po));
+  });
+}
+
+/**
+ * stopPlay()
+ *
+ * 停止播放。
+ *
+ * [優化3] paused 狀態下先 ac.resume().then(stop)，確保 ac 真正恢復後再執行 stop，
+ *         避免 AudioContext 在 suspended 狀態下 stop 行為不確定。
+ *
+ * [優化5] 主動清除 po._onnoteTimouts：Audio5.stop() 原版只清 po.timouts，
+ *         無法清除 _onnoteTimouts，舊的 onnote off 會在新播放開始後才觸發，
+ *         造成視覺混亂。stopPlay 主動清除，不需要動 Audio5.stop() 原版。
+ */
+function stopPlay() {
+  var po = abc2svg._current_po;
+
+  // ── [優化5] 主動清除 onnote on/off setTimeout，Audio5.stop() 原版清不到 ──
+  if (po && po._onnoteTimouts) {
+    po._onnoteTimouts.forEach(function(e) { clearTimeout(e.id); });
+    po._onnoteTimouts = [];
+  }
+
+  if (play._pausedPo !== null) {
+    // ── [優化3] paused 狀態：ac.resume() 非同步，待恢復後再 stop ──
+    play._pausedPo = null;
+    ++play._resumeGen;  // 使任何進行中的 resumePlay then() 失效
+    if (po && po.ac && po.ac.state !== 'running') {
+      po.ac.resume().then(function() { play.abcplay.stop(); });
+      play.stopping = true;
+      return;
+    }
+  }
+  play.stopping = true;
   play.abcplay.stop();
 }
 
 function onPlayEnd(repv) {
-  if (!play.stopping && play.stopAt === 0) {
+  // paused 狀態下 onend 不應觸發
+  if (play._pausedPo !== null) return;
+  if (!play.stopping) {
     // 循環模式：直接重播（loopMode !== 0 即啟用，無次數上限）
     if (loopMode !== 0) {
       ++loopCount;
@@ -1552,16 +1651,11 @@ function onPlayEnd(repv) {
 // play_tune(what)
 //
 //   what=0  整首 / 重播
-//             來源 A：右鍵選單「播放」（無 B 點）— play.click.tuneFirst 指定曲子起點
-//             來源 B：onLeftClick 空白處重播 — 從 play.si 繼續
+//             從 play.si 繼續，或從第一個音符起播
 //
 //   what=1  選段播放
 //             從 selx[0]（A 點）到 selx[1]（B 點）之間的範圍
 //             來源：右鍵選單「播放」（有 B 點時自動選段）
-//
-//   what=3  繼續（resume）
-//             從 play.stopAt 斷點接續，play.ei 保持不變
-//             來源：右鍵選單「繼續」、onLeftClick stopAt、ppBtn stopAt
 //
 //   what=4  從指定音符起播
 //             si 來自 selx[0]，ei 來自 play.ei（呼叫方負責設定）
@@ -1569,33 +1663,24 @@ function onPlayEnd(repv) {
 //             選段播放中點音符：呼叫前 play.ei 保持原終點
 //
 function play_tune(what) {
-  ctxMenu.style.display = 'none';
   if (!play.abcplay) { alert('音效尚未載入，請稍候再試'); return; }
+  // paused 狀態下除非明確 resume，否則不重新起播
+  if (play._pausedPo !== null) return;
   if (play.playing) {
-    if (!play.stopping) stopPlay(false);
+    if (!play.stopping) stopPlay();
     return;
   }
   addTunes();
   var si, ei;
 
-  if (what === 3) {
-    // 繼續：從斷點接續，走 abcplay.play()。
-    // repv/repn 已由 stopPlay 存入 play.resumeRepv/resumeRepn，
-    // play_next 末尾讀取還原後即清，不需要額外全域物件。
-    if (play.stopAt <= 0) return;
-    si = get_se(play.stopAt);
-    ei = play.ei; play.stopAt = 0;
-    if (!si) return;
-    play.isResume = true;
-  } else if (what === 4) {
+  if (what === 4) {
     // 從指定音符起播
     si = get_se(selx[0]);
     if (!si) return;
     play.si = si;
     ei = play.ei;
-    play.repv = 0; play.stopAt = 0; loopCount = 0;
+    play.repv = 0; loopCount = 0;
   } else {
-    play.stopAt = 0;
     if (what === 1) {
       // 選段播放
       var a = selx[0], b = selx[1];
@@ -1609,13 +1694,9 @@ function play_tune(what) {
         si = gsot(b); ei = get_ee(b);
       }
     } else {
-      // what=0：整首 / 重播
-      //   (A) 右鍵選單「播放」（無 B 點）：play.click.tuneFirst 指定曲子起點
-      //   (B) onLeftClick 空白處重播：改用 play.si
-      var fromClick = play.click && play.click.tuneFirst;
-      play.click = null;
-      si = fromClick ? gsot_tune_start(fromClick) : play.si || first_sym();
-      ei = fromClick ? null : play.ei;
+      // what=0：整首 / 重播，從 play.si 或第一個音符起播
+      si = play.si || first_sym();
+      ei = play.ei;
       if (!si) return;
     }
     if (si && ei && si === ei) ei = get_measure_end(syms.indexOf(si));
@@ -1632,10 +1713,11 @@ window.play_tune = play_tune;
 
 function playStart(si, ei) {
   if (!si) return;
+  // 新播放開始時，確保清除任何殘留的 paused 狀態（_pausedPo = null 表示 not paused）
+  play._pausedPo = null;
   // resume 時 anchor 狀態存在 sym 節點上，stop 後仍存活，不需要 reset jumpCtx
-  if (!play.isResume) _resetAllJumpCtx();
+  _resetAllJumpCtx();
   play.playing = true;
-  play.isResume = false;
   refreshToggleLabel();
   play.abcplay.play(si, ei, play.repv);
 }
