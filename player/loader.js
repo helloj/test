@@ -694,8 +694,7 @@ abc2svg.play_next = function(po) {
 
   // ── 無跳轉：直接呼叫原版，完全不介入 ─────────────────────────
   if (!ctx) {
-    orig_play_next(po);
-    return;
+    ctx = null
   }
 
   // ── 以下為 snd-1.js 原文（do_tie）────────────────────────────
@@ -1242,15 +1241,38 @@ function onLeftClick(evt) {
 
   if (play._pausedPo !== null) {
     if (v) {
-      // paused 中點音符：取消 pause，從該音符重新播
+      // paused 中點新音符：先 resume ac，再 stop 舊 po，再從新音符起播
+      //
+      // 必須按照此順序：
+      //   1. ac.resume()       — ac 是 suspended，stop/play 都需要 ac running
+      //   2. abcplay.stop()    — 清 Audio5 closure 內的 gain（唯一能清的路徑）
+      //                          stop() 同步呼叫 onPlayEnd，清 play.playing/stopping
+      //   3. play_tune(4)      — ac 已 running，gain 已清，新播放正常發聲
+      //
+      // 不能直接呼叫 stopPlay()：stopPlay 的 paused 路徑是 resume().then(stop)，
+      // then() 之後才 stop，而 play_tune(4) 在 then() 之外立即執行，
+      // 造成 play() 先於 stop() 完成，ac 仍 suspended，第一次 click 無聲。
       var po = play._pausedPo;
-      if (po && po.ac) po.ac.resume();
+
+      // 清 JS 層殘留的 onnote timouts（pausePlay 已清 po.timouts，只剩 _onnoteTimouts）
+      if (po && po._onnoteTimouts) {
+        po._onnoteTimouts.forEach(function(e) { clearTimeout(e.id); });
+        po._onnoteTimouts = [];
+      }
+
       play._pausedPo = null;
-      play.playing   = false;  // 讓 play_tune 可以進入
-      play.stopping  = false;
-      setsel(0, v); setsel(1, 0);
-      play.ei = null;
-      play_tune(4);
+      ++play._resumeGen;  // 使任何進行中的 resumePlay then() 失效
+      play.stopping = true;
+
+      var doPlay = function() {
+        play.abcplay.stop();        // 同步：清 gain，觸發 onPlayEnd
+        // onPlayEnd 已同步執行：play.playing=false, play.stopping=false
+        setsel(0, v); setsel(1, 0);
+        play.ei = null;
+        play_tune(4);
+      };
+
+      po.ac.resume().then(doPlay);
     } else {
       // paused 中點空白：resume
       resumePlay();
