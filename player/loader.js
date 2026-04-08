@@ -46,9 +46,9 @@
  *      - 渲染完成後將各 tuneN SVG 搬入對應的 abc-slot
  *   5. 播放 / 循環 / 選段 / 繼續 / 音符高亮 等完整邏輯
  *      - 各首邊界由 abcplay.add(first, last) 管理，不跨首
- *      - 左鍵點音符：播放中直接切換起點，非播放中從該音符起播
- *      - 右鍵點音符：設 B 點（選段終點），左鍵 click 清除 B 點
- *      - 右鍵點空白：開選單（播放 / 繼續），有 B 點時「播放」自動選段
+ *      - 左鍵點音符：設 A 點，若 A < B 則保留 B 點（選段播放），否則清 B 點
+ *      - 左鍵點空白：非播放中從頭（或上次位置）起播；播放中暫停；暫停中繼續
+ *      - 右鍵點音符：設 B 點（選段終點）；播放中即時調整終點
  *
  * 與 HTML 的約定：
  *   - 若頁面有 .tune-block 等父容器包住 <script type="text/vnd.abc">，
@@ -56,6 +56,39 @@
  *   - #target（隱藏）作為殘留 SVG 的暫存容器
  */
 ;(function () {
+
+// ══════════════════════════════════════════
+// 0A. 播放狀態枚舉
+// ══════════════════════════════════════════
+/**
+ * PlayState - 播放器狀態機
+ *
+ * @enum {number}
+ * @readonly
+ *
+ * 狀態說明：
+ *   IDLE     (0) - 閒置，無播放活動（初始狀態 / 播放完成後）
+ *   PLAYING  (1) - 正在播放音樂，AudioContext 運行中
+ *   PAUSED   (2) - 已暫停，AudioContext suspended，但保留播放進度
+ *   STOPPING (3) - 停止中（過渡狀態），等待 onPlayEnd 回調完成清理
+ *
+ * 合法轉換：
+ *   IDLE     → PLAYING   (playStart)
+ *   PLAYING  → PAUSED    (pausePlay)
+ *   PLAYING  → STOPPING  (stopPlay)
+ *   PAUSED   → PLAYING   (resumePlay)
+ *   PAUSED   → STOPPING  (stopPlay)
+ *   STOPPING → IDLE      (onPlayEnd)
+ *   PLAYING  → IDLE      (onPlayEnd, 自然結束)
+ */
+var PlayState = {
+  IDLE:     0,  // 閒置
+  PLAYING:  1,  // 播放中
+  PAUSED:   2,  // 已暫停
+  STOPPING: 3   // 停止中
+};
+
+var PlayStateName = ['IDLE', 'PLAYING', 'PAUSED', 'STOPPING'];
 
 // ══════════════════════════════════════════
 // 0. 全域常數（類 C #define，集中修改）
@@ -92,12 +125,12 @@ var CFG = {
     ":root{--ink:#1a120b;--paper:#f5efe6;--accent:#8b3a3a;--muted:#c2a97a;--panel:rgba(245,239,230,0.66);--panel-solid: rgb(245,239,230)}",
     "html,body{height:100%;background:var(--paper);color:var(--ink);font-family:'Noto Serif TC','Kaiti TC','STKaiti',serif}",
     /* fab-toolbar：水平浮動，固定在右上角 */
-    "#fab-toolbar{position:fixed;top:16px;right:100px;z-index:50;display:flex;flex-direction:row;align-items:center;gap:6px;background:var(--panel);border:1px solid var(--muted);border-radius:8px;padding:6px 8px;box-shadow:0 4px 16px rgba(139,58,58,0.15);user-select:none}",
+    "#fab-toolbar{position:fixed;top:16px;right:4.0rem;z-index:50;display:flex;flex-direction:row;align-items:center;gap:6px;background:var(--panel);border:1px solid var(--muted);border-radius:8px;padding:6px 8px;box-shadow:0 4px 16px rgba(139,58,58,0.15);user-select:none}",
     ".fab-divider{width:1px;height:1.8em;background:var(--muted);opacity:.4;margin:0 2px}",
-    "#play-pause-btn{display:flex;align-items:center;justify-content:center;width:2.4em;height:2.4em;border:1px solid var(--muted);border-radius:4px;background:transparent;color:var(--muted);font-size:.85rem;cursor:pointer;transition:background .12s,color .12s;line-height:1;padding:0;font-family:inherit}",
+    "#play-pause-btn{display:flex;align-items:center;justify-content:center;width:2.4em;height:2.4em;border:1px solid var(--muted);border-radius:4px;background:transparent;color:var(--muted);font-size:1.1rem;cursor:pointer;transition:background .12s,color .12s;line-height:1;padding:0;font-family:inherit}",
     "#play-pause-btn:hover{background:rgba(139,58,58,0.10);color:var(--ink)}",
     "#loopSegBtn{position:relative;display:flex;align-items:center}",
-    "#loop-icon{display:flex;align-items:center;justify-content:center;width:2.4em;height:2.4em;border:1px solid var(--muted);border-radius:4px;background:transparent;color:var(--muted);font-size:.85rem;cursor:pointer;transition:background .12s,color .12s;line-height:1;padding:0;font-family:inherit;white-space:nowrap}",
+    "#loop-icon{display:flex;align-items:center;justify-content:center;width:2.4em;height:2.4em;border:1px solid var(--muted);border-radius:4px;background:transparent;color:var(--muted);font-size:1.1rem;cursor:pointer;transition:background .12s,color .12s;line-height:1;padding:0;font-family:inherit;white-space:nowrap}",
     "#loop-icon:hover{background:rgba(139,58,58,0.10);color:var(--ink)}",
     "#loop-icon.active{background:rgba(139,58,58,0.15);color:var(--ink)}",
     "#dright{display:none}",
@@ -127,7 +160,7 @@ var CFG = {
     ".speed-preset{padding:7px 16px;border:1px solid var(--muted);border-radius:20px;background:transparent;color:var(--muted);font-size:.82rem;font-family:inherit;cursor:pointer;transition:background .12s,color .12s,border-color .12s}",
     ".speed-preset:hover{background:rgba(139,58,58,0.10);color:var(--ink)}",
     ".speed-preset.active{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600}",
-    "#speed-btn{display:flex;align-items:center;justify-content:center;width:2.4em;height:2.4em;border:1px solid var(--muted);border-radius:4px;background:transparent;color:var(--muted);font-size:.85rem;cursor:pointer;transition:background .12s,color .12s;line-height:1;padding:0;font-family:inherit}",
+    "#speed-btn{display:flex;align-items:center;justify-content:center;width:2.4em;height:2.4em;border:1px solid var(--muted);border-radius:4px;background:transparent;color:var(--muted);font-size:1.1rem;cursor:pointer;transition:background .12s,color .12s;line-height:1;padding:0;font-family:inherit}",
     "#speed-btn:hover{background:rgba(139,58,58,0.10);color:var(--ink)}",
     "#speed-btn.active{background:rgba(139,58,58,0.15);color:var(--ink)}"
   ].join('\n');
@@ -750,7 +783,7 @@ abc2svg.play_next = function(po) {
     if(po._gen !== _playGeneration){
       po.timouts.forEach(function(id){ clearTimeout(id); });
       po.timouts = [];
-      if(po._onnoteTimouts){ po._onnoteTimouts.forEach(function(e){ clearTimeout(e.id); }); po._onnoteTimouts=[]; }
+      clearOnnoteTimouts(po);
       return;
     }
     // ── [GEN] end ─────────────────────────────────────────────────
@@ -976,20 +1009,79 @@ var abcSrc  = '',
     selx_sav  = [],
     currentSpeed = CFG.SPEED_DEFAULT,  // 當前播放速度（倍率）
     play = {
-      playing:false, stopping:false,
+      state: PlayState.IDLE,
       si:null, ei:null, repv:0,
       abcplay:null,
       lastNote:0, curNotes:new Set(),
-      // ── pause/resume ───────────────────────────────────────────
-      // _pausedPo: paused 時存下的 po reference；null = not paused。
-      //            用 play._pausedPo !== null 判斷 paused 狀態，
-      //            不另設 paused boolean，確保兩者永遠同步。
-      // _resumeGen: resume 世代號，防止快速 pause/resume race condition
       _pausedPo: null, _resumeGen: 0
     };
 
-// refreshToggleLabel：Section 8 IIFE 初始化時設定，此後直接呼叫
 var refreshToggleLabel = function() {};
+
+// ══════════════════════════════════════════
+// 4b. 輔助函式
+// ══════════════════════════════════════════
+
+/**
+ * setState(newState, reason) - 狀態轉換函式（帶日誌與合法性檢查）
+ *
+ * @param {PlayState} newState - 目標狀態
+ * @param {string} [reason] - 轉換原因（調試用）
+ *
+ * 範例：
+ *   setState(PlayState.PLAYING, 'playStart');
+ *   setState(PlayState.PAUSED, 'user clicked pause');
+ */
+function setState(newState, reason) {
+  var oldState = play.state;
+  if (oldState === newState) return;  // 忽略無效轉換
+
+  // ── 合法性檢查（開發環境啟用，生產環境可註解）──
+  var validTransitions = {
+    0: [1],       // IDLE     → PLAYING
+    1: [2, 3, 0], // PLAYING  → PAUSED / STOPPING / IDLE（自然結束）
+    2: [1, 3],    // PAUSED   → PLAYING / STOPPING
+    3: [0]        // STOPPING → IDLE
+  };
+  if (validTransitions[oldState].indexOf(newState) === -1) {
+    console.error('[狀態機錯誤] 非法轉換：' +
+      PlayStateName[oldState] + ' → ' + PlayStateName[newState] +
+      (reason ? ' (' + reason + ')' : ''));
+    return;
+  }
+
+  // ── 執行狀態轉換 ──
+  play.state = newState;
+
+  // ── 調試日誌（開發環境啟用，生產環境可註解）──
+  if (typeof console !== 'undefined' && console.log) {
+    console.log('[狀態機] ' + PlayStateName[oldState] + ' → ' +
+                PlayStateName[newState] +
+                (reason ? ' (' + reason + ')' : ''));
+  }
+}
+
+/**
+ * isState(state) - 狀態檢查函式（提升可讀性）
+ *
+ * @param {PlayState} state - 要檢查的狀態
+ * @returns {boolean}
+ *
+ * 範例：
+ *   if (isState(PlayState.PLAYING)) { ... }
+ */
+function isState(state) {
+  return play.state === state;
+}
+
+/**
+ * isActivePlayback() - 檢查是否處於活躍播放週期（PLAYING 或 PAUSED）
+ *
+ * @returns {boolean}
+ */
+function isActivePlayback() {
+  return play.state === PlayState.PLAYING || play.state === PlayState.PAUSED;
+}
 
 // ══════════════════════════════════════════
 // 5. 渲染核心（以 abcweb1-1.js 為基礎）
@@ -1233,78 +1325,93 @@ function first_sym() {
   }
 }
 
+//
+// 清除 po._onnoteTimouts 內所有待觸發的 onnote on/off setTimeout。
+// Audio5.stop() 原版只清 po.timouts，_onnoteTimouts 需自行清除。
+//
+// 注意：pausePlay 不使用此函式，因為它需要將 entry 轉存到
+//       play._pausedOnnotes 供 resumePlay 重排，語意不同。
+//
+function clearOnnoteTimouts(po) {
+  if (!po || !po._onnoteTimouts) return;
+  po._onnoteTimouts.forEach(function(e) { clearTimeout(e.id); });
+  po._onnoteTimouts = [];
+}
+
+//
+// 使用者點選音符後的統一入口。
+//
+// 職責：
+//   1. 設定 A 點（selx[0] = v）
+//   2. B 點保留判斷：v < selx[1] 時保留 B 點，否則清除
+//   3. 處理 paused 狀態的非同步起播序列
+//   4. 呼叫 play_tune()
+//
+// paused 路徑說明：
+//   必須按照 ac.resume() → stop() → play_tune() 的順序。
+//   不能直接呼叫 stopPlay()：stopPlay 的 paused 路徑是
+//   resume().then(stop)，play_tune() 若在 then() 外執行，
+//   ac 仍 suspended，第一次 click 無聲。
+//
+function seekTo(v) {
+  // ── B 點保留判斷（在任何狀態切換前先決定） ────────────────────
+  var keepB = selx[1] && v < selx[1];
+  setsel(0, v);
+  if (!keepB) setsel(1, 0);
+  // play.si 提前更新：即使 play_tune 因 abcplay 未載入而提早 return，
+  // 之後按 Play 按鈕仍會從此音符起播，而非回到上次位置。
+  play.si = get_se(v);
+
+  // ── [狀態機] paused 狀態：ac.resume() → stop → play_tune ───────
+  if (isState(PlayState.PAUSED)) {
+    // 清 JS 層殘留的 onnote timouts
+    // （pausePlay 已清 po.timouts，只剩 _onnoteTimouts）
+    var po = play._pausedPo;
+    clearOnnoteTimouts(po);
+    play._pausedPo = null;
+    ++play._resumeGen;  // 使任何進行中的 resumePlay then() 失效
+    setState(PlayState.STOPPING, 'seekTo from PAUSED');
+
+    po.ac.resume().then(function() {
+      play.abcplay.stop();  // 同步：清 gain，觸發 onPlayEnd
+      // onPlayEnd 已同步執行：play.state=IDLE
+      play_tune();
+    });
+    return;
+  }
+
+  // ── [狀態機] idle 狀態：直接起播 ──────────────────────────────
+  play_tune();
+}
+
 // ══════════════════════════════════════════
 // 7. 點擊事件
 // ══════════════════════════════════════════
 function onLeftClick(evt) {
   var v = getSymIndex(evt.target);
 
-  if (play._pausedPo !== null) {
-    if (v) {
-      // paused 中點新音符：先 resume ac，再 stop 舊 po，再從新音符起播
-      //
-      // 必須按照此順序：
-      //   1. ac.resume()       — ac 是 suspended，stop/play 都需要 ac running
-      //   2. abcplay.stop()    — 清 Audio5 closure 內的 gain（唯一能清的路徑）
-      //                          stop() 同步呼叫 onPlayEnd，清 play.playing/stopping
-      //   3. play_tune(4)      — ac 已 running，gain 已清，新播放正常發聲
-      //
-      // 不能直接呼叫 stopPlay()：stopPlay 的 paused 路徑是 resume().then(stop)，
-      // then() 之後才 stop，而 play_tune(4) 在 then() 之外立即執行，
-      // 造成 play() 先於 stop() 完成，ac 仍 suspended，第一次 click 無聲。
-      var po = play._pausedPo;
-
-      // 清 JS 層殘留的 onnote timouts（pausePlay 已清 po.timouts，只剩 _onnoteTimouts）
-      if (po && po._onnoteTimouts) {
-        po._onnoteTimouts.forEach(function(e) { clearTimeout(e.id); });
-        po._onnoteTimouts = [];
-      }
-
-      play._pausedPo = null;
-      ++play._resumeGen;  // 使任何進行中的 resumePlay then() 失效
-      play.stopping = true;
-
-      var doPlay = function() {
-        play.abcplay.stop();        // 同步：清 gain，觸發 onPlayEnd
-        // onPlayEnd 已同步執行：play.playing=false, play.stopping=false
-        setsel(0, v); setsel(1, 0);
-        play.ei = null;
-        play_tune(4);
-      };
-
-      po.ac.resume().then(doPlay);
-    } else {
-      // paused 中點空白：resume
-      resumePlay();
-    }
+  // ── paused 狀態 ───────────────────────────────────────────────
+  if (isState(PlayState.PAUSED)) {
+    if (v) seekTo(v);
+    else   resumePlay();
     return;
   }
 
-  if (play.playing && !play.stopping) {
+  // ── playing 狀態 ──────────────────────────────────────────────
+  if (isState(PlayState.PLAYING)) {
     if (v) {
-      // 播放中點到音符：直接切換起播位置（殘存問題由 _playGeneration 守衛解決）
-      stopPlay();                // 停止舊播放
-      setsel(0, v);             // 設新 A 點
-      setsel(1, 0);             // 清 B 點
-      play.ei = null;           // 整首從新音符播到結尾
-      play_tune(4);             // 從新音符立即起播
+      // abcplay.stop() 同步呼叫 onPlayEnd，stopPlay() 返回時
+      // play.state 已為 IDLE，seekTo() 可安全起播。
+      stopPlay(); seekTo(v);
     } else {
-      // 點空白：pause（新構想，保留 po）
       pausePlay();
     }
     return;
   }
 
-  // ── 非播放狀態 ────────────────────────────────────────────────
-  // 左鍵 click 同時清除 B 點
-  if (v) {
-    setsel(0, v); setsel(1, 0);
-    play.ei = null;   // 整首從此音符播到結尾
-    play_tune(4);
-  } else {
-    play.repv = 0; loopCount = 0;
-    play_tune(0);
-  }
+  // ── idle 狀態 ─────────────────────────────────────────────────
+  if (v) seekTo(v);
+  else   play_tune();  // 無音符：從頭（或上次位置）起播，感知 A/B 點
 }
 
 function onRightClick(evt) {
@@ -1313,14 +1420,22 @@ function onRightClick(evt) {
   if (!v) return;
   // 右鍵點音符：設 B 點
   setsel(1, v);
-  if (play.playing) {
-    // 播放中即時調整終點
-    var a = selx[0], b = v;
-    if (a && b) {
+  if (isState(PlayState.PLAYING)) {
+    // 播放中即時調整終點：以目前 A 點（selx[0]）和新 B 點重算 ei
+    // 與 play_tune 的 A/B 對調保護對齊：b < a 時 swap 後重算
+    var a = selx[0], b = v, si;
+    if (a) {
       if (b < a) { var t = a; a = b; b = t; }
-      var newSi = get_se(a), newEi = get_ee_by_time(newSi, syms[b]);
+      si = get_se(a);
+    } else {
+      si = play.si;
+    }
+    if (si) {
+      var newEi = (a === b) ? get_measure_end(a) : get_ee_by_time(si, syms[b]);
       if (abc2svg._current_po) abc2svg._current_po.s_end = newEi;
       play.ei = newEi;
+      // 選段範圍變更：循環計數歸零，UI 從第一圈重新顯示
+      if (loopMode !== 0) { loopCount = 0; refreshToggleLabel(); }
     }
   }
 }
@@ -1332,22 +1447,27 @@ function onRightClick(evt) {
   var loopIcon  = document.getElementById('loop-icon'),
       ppBtn     = document.getElementById('play-pause-btn');
 
-  // ── Play/Pause 按鈕顯示更新 ─────────────────────────────────────
+  // ── Play/Pause 按鈕顯示更新 ───────────────────────
   function refreshPlayPauseBtn() {
-    if (play._pausedPo !== null) {
-      ppBtn.textContent = CFG.ICON_RESUME;
-    } else if (play.playing) {
-      ppBtn.textContent = CFG.ICON_PAUSE;
-    } else {
-      ppBtn.textContent = CFG.ICON_PLAY;
+    var icon;
+    switch (play.state) {
+      case PlayState.PAUSED:
+        icon = CFG.ICON_RESUME;
+        break;
+      case PlayState.PLAYING:
+        icon = CFG.ICON_PAUSE;
+        break;
+      default:  // IDLE / STOPPING
+        icon = CFG.ICON_PLAY;
     }
+    ppBtn.textContent = icon;
   }
 
-  // ── loop-icon 顯示更新 ──────────────────────────────────────────
+  // ── loop-icon 顯示更新 ────────────────────────────
   function refreshLoopIcon() {
     var on = loopMode !== 0;
     loopIcon.classList.toggle('active', on);
-    if (on && play.playing) {
+    if (on && isState(PlayState.PLAYING)) {
       // 播放中顯示累計循環次數
       loopIcon.textContent = '×' + (loopCount + 1);
     } else {
@@ -1361,18 +1481,17 @@ function onRightClick(evt) {
     refreshLoopIcon();
   };
 
-  // ── Play/Pause 按鈕 click ───────────────────────────────────────
+  // ── Play/Pause 按鈕 click ─────────────────────────
   ppBtn.addEventListener('click', function () {
-    if (play._pausedPo !== null) {
+    if (isState(PlayState.PAUSED)) {
       // paused 狀態：resume（直接接續，不走 play_next）
       resumePlay();
-    } else if (play.playing) {
+    } else if (isState(PlayState.PLAYING)) {
       // playing 狀態：pause（凍結 ac，保留 po）
       pausePlay();
     } else {
-      play.si = play.si || first_sym();
-      play.repv = 0; loopCount = 0;
-      play_tune(0);
+      // idle 狀態：play_tune() 統一感知 A/B 點與 play.si
+      play_tune();
     }
   });
 
@@ -1525,7 +1644,20 @@ function clearAllHighlight() {
 function notehlight(i, on) {
   // ── [pause-guard] paused 中 on 回呼已在 task queue 排隊清不掉，在此攔截 ──
   // off 回呼不攔截：讓音符暗掉是正確的，避免殘留高亮。
-  if (play._pausedPo && on) return;
+  if (isState(PlayState.PAUSED) && on) return;
+
+  // ── [B-overshoot] B 點越界偵測 ────────────────────────────────
+  // onnote on 觸發時，若當前音符 istart 已超過 B 點（selx[1]），
+  // 表示 po.s_end 設置時音符已送進 WebAudio Buffer，無法撤回。
+  // 立即停播並從原 A/B 點重新起播，selx 狀態不變，
+  // play_tune() 自動感知 A/B 重算 si/ei。
+  if (on && selx[1] && i > selx[1] && isState(PlayState.PLAYING)) {
+    stopPlay();
+    play_tune();
+    return;
+  }
+  // ── [B-overshoot] end ─────────────────────────────────────────
+
   if (on) {
     // 多聲部：同一時間點多個 istart 都可以亮，不清舊
     play.lastNote = i;
@@ -1533,9 +1665,12 @@ function notehlight(i, on) {
   } else {
     play.curNotes.delete(i);
   }
-  if (play.stopping && on) return;
+  if (isState(PlayState.STOPPING) && on) return;
   setNoteOp(i, on);
 }
+
+// ── [scroll] 捲動防抖旗標：smooth 動畫期間（約 500ms）鎖住重複觸發 ──
+var _scrollPending = false;
 
 function setNoteOp(i, on) {
   var elts = document.getElementsByClassName('_' + i + '_');
@@ -1545,8 +1680,16 @@ function setNoteOp(i, on) {
   for (var j = 0; j < elts.length; j++) elts[j].style.fillOpacity = op;
   if (on) {
     var r = elts[0].getBoundingClientRect();
-    if (r.top < 20 || r.bottom > window.innerHeight - 20)
-      window.scrollBy({ top: r.top - window.innerHeight / 2, behavior: 'smooth' });
+    // ── 觸發條件：音符進入下 1/4（bottom 超過 3/4 高度）或超出上緣（top < 20）──
+    // ── 捲動目標：讓音符落在上 1/5（r.top → innerHeight / 5）             ──
+    // ── 防抖：_scrollPending 期間不重複觸發，避免 smooth 動畫連續疊加抖動  ──
+    var triggerLow  = r.bottom > window.innerHeight * 3 / 4;
+    var triggerHigh = r.top < 20;
+    if ((triggerLow || triggerHigh) && !_scrollPending) {
+      _scrollPending = true;
+      window.scrollBy({ top: r.top - window.innerHeight / 5, behavior: 'smooth' });
+      setTimeout(function () { _scrollPending = false; }, 500);
+    }
   }
 }
 
@@ -1555,7 +1698,9 @@ function setNoteOp(i, on) {
 // ══════════════════════════════════════════
 
 /**
- * pausePlay()
+ * pausePlay() - 暫停播放
+ *
+ * 狀態轉換：PLAYING → PAUSED
  *
  * 不破壞 po 狀態，直接凍結 AudioContext。
  *
@@ -1569,6 +1714,9 @@ function setNoteOp(i, on) {
  * po.stim / po.s_cur / po.repv / po.repn / anchor 狀態完全不動。
  */
 function pausePlay() {
+  // ── [狀態機] 只有 PLAYING 狀態才能暫停 ──
+  if (!isState(PlayState.PLAYING)) return;
+
   var po = abc2svg._current_po;
   if (!po) return;
   var ac = po.ac;
@@ -1602,13 +1750,16 @@ function pausePlay() {
   clearAllHighlight();
   if (play.lastNote) setNoteOp(play.lastNote, true);
 
-  play.stopping  = false;
+  // ── [狀態機] 狀態轉換：PLAYING → PAUSED ──
+  setState(PlayState.PAUSED, 'pausePlay');
   play._pausedPo = po;
   refreshToggleLabel();
 }
 
 /**
- * resumePlay()
+ * resumePlay() - 恢復播放
+ *
+ * 狀態轉換：PAUSED → PLAYING
  *
  * 恢復 AudioContext，重排 onnote on/off 與 play_cont reschedule，不走 play_next。
  *
@@ -1623,6 +1774,9 @@ function pausePlay() {
  * po.s_cur / po.stim / repv / repn / anchor 完全不動，無丟失，無重疊。
  */
 function resumePlay() {
+  // ── [狀態機] 只有 PAUSED 狀態才能恢復 ──
+  if (!isState(PlayState.PAUSED)) return;
+
   var po = play._pausedPo;
   if (!po) return;
   var ac = po.ac;
@@ -1639,6 +1793,9 @@ function resumePlay() {
   ac.resume().then(function() {
     // ── [優化4] 世代號不符：then() 執行前已再次 pause，放棄本次 resume ──
     if (play._resumeGen !== myGen) return;
+
+    // ── [狀態機] 狀態轉換：PAUSED → PLAYING ──
+    setState(PlayState.PLAYING, 'resumePlay.then');
 
     // 重排尚未觸發的 onnote on/off
     if (play._pausedOnnotes) {
@@ -1657,13 +1814,15 @@ function resumePlay() {
       delay = Math.max(0, (play._nextContAt - ac.currentTime) * 1000);
     play._nextContAt = null;
     po.timouts.push(setTimeout(po._play_cont, delay, po));
+
+    refreshToggleLabel();
   });
 }
 
 /**
- * stopPlay()
+ * stopPlay() - 停止播放
  *
- * 停止播放。
+ * 狀態轉換：PLAYING / PAUSED → STOPPING
  *
  * [優化3] paused 狀態下先 ac.resume().then(stop)，確保 ac 真正恢復後再執行 stop，
  *         避免 AudioContext 在 suspended 狀態下 stop 行為不確定。
@@ -1676,40 +1835,55 @@ function stopPlay() {
   var po = abc2svg._current_po;
 
   // ── [優化5] 主動清除 onnote on/off setTimeout，Audio5.stop() 原版清不到 ──
-  if (po && po._onnoteTimouts) {
-    po._onnoteTimouts.forEach(function(e) { clearTimeout(e.id); });
-    po._onnoteTimouts = [];
-  }
+  clearOnnoteTimouts(po);
 
-  if (play._pausedPo !== null) {
+  // ── [狀態機] PAUSED 狀態的特殊處理 ──
+  if (isState(PlayState.PAUSED)) {
     // ── [優化3] paused 狀態：ac.resume() 非同步，待恢復後再 stop ──
     play._pausedPo = null;
     ++play._resumeGen;  // 使任何進行中的 resumePlay then() 失效
     if (po && po.ac && po.ac.state !== 'running') {
       po.ac.resume().then(function() { play.abcplay.stop(); });
-      play.stopping = true;
+      setState(PlayState.STOPPING, 'stopPlay from PAUSED');
       return;
     }
   }
-  play.stopping = true;
+
+  // ── [狀態機] 狀態轉換：PLAYING / PAUSED → STOPPING ──
+  setState(PlayState.STOPPING, 'stopPlay');
   play.abcplay.stop();
 }
 
+/**
+ * onPlayEnd() - 播放結束回調
+ *
+ * 狀態轉換：
+ *   - STOPPING → IDLE（用戶主動停止）
+ *   - PLAYING  → IDLE（自然結束）或 → PLAYING（循環重播）
+ */
 function onPlayEnd(repv) {
-  // paused 狀態下 onend 不應觸發
-  if (play._pausedPo !== null) return;
-  if (!play.stopping) {
+  // ── [狀態機] paused 狀態下 onend 不應觸發 ──
+  if (isState(PlayState.PAUSED)) return;
+
+  // ── [狀態機] PLAYING 狀態：自然結束，檢查循環 ──
+  if (isState(PlayState.PLAYING)) {
     // 循環模式：直接重播（loopMode !== 0 即啟用，無次數上限）
     if (loopMode !== 0) {
       ++loopCount;
       refreshToggleLabel();
       playStart(play.si, play.ei);
-      return;
+      return;  // 保持 PLAYING 狀態
     }
+    loopCount = 0;  // 自然結束才重置計數
   }
-  if (!play.stopping) loopCount = 0;
-  play.playing = false;
-  play.stopping = false;
+
+  // ── [狀態機] STOPPING 狀態：用戶主動停止，不重置 loopCount ──
+  // （原版 line 1745: if (!play.stopping) loopCount = 0;）
+  // 意即：主動停止保留計數，自然結束才重置
+
+  // ── [狀態機] 狀態轉換：PLAYING / STOPPING → IDLE ──
+  setState(PlayState.IDLE, 'onPlayEnd');
+
   play.repv = repv;
   selx_sav[0] = selx[0]; selx_sav[1] = selx[1];
   refreshToggleLabel();
@@ -1719,77 +1893,87 @@ function onPlayEnd(repv) {
 // 12. 播放主函式
 // ══════════════════════════════════════════
 //
-// play_tune(what)
+// play_tune()
 //
-//   what=0  整首 / 重播
-//             從 play.si 繼續，或從第一個音符起播
+//   統一由 selx[0]（A點）/ selx[1]（B點）推算 si / ei，
+//   不再使用 what 參數：
 //
-//   what=1  選段播放
-//             從 selx[0]（A 點）到 selx[1]（B 點）之間的範圍
-//             來源：右鍵選單「播放」（有 B 點時自動選段）
+//   si：有 A點 → get_se(selx[0])
+//       無 A點 → play.si || first_sym()（從上次位置或曲首）
 //
-//   what=4  從指定音符起播
-//             si 來自 selx[0]，ei 來自 play.ei（呼叫方負責設定）
-//             整首播放中點音符：呼叫前 play.ei = null
-//             選段播放中點音符：呼叫前 play.ei 保持原終點
+//   ei：有 A點 且 有 B點 且 A < B → get_ee_by_time()（選段）
+//       A === B                   → get_measure_end()（單小節）
+//       B < A                     → swap 後同上（對調保護）
+//       無 B點，僅有 B點           → gsot(b) 起播到 get_ee(b)
+//       否則                      → null（播到結尾）
 //
-function play_tune(what) {
+//   呼叫方只需設好 selx（透過 seekTo 或直接操作），不再傳 what 參數。
+//
+function play_tune() {
   if (!play.abcplay) { alert('音效尚未載入，請稍候再試'); return; }
-  // paused 狀態下除非明確 resume，否則不重新起播
-  if (play._pausedPo !== null) return;
-  if (play.playing) {
-    if (!play.stopping) stopPlay();
+
+  // ── [狀態機] PAUSED 狀態下除非明確 resume，否則不重新起播 ──
+  if (isState(PlayState.PAUSED)) return;
+
+  // ── [狀態機] PLAYING / STOPPING 狀態：停止播放 ──
+  if (isActivePlayback() || isState(PlayState.STOPPING)) {
+    // 防止重複調用 stopPlay（原版 line 1778: if (!play.stopping) stopPlay()）
+    if (!isState(PlayState.STOPPING)) {
+      stopPlay();
+    }
     return;
   }
-  addTunes();
-  var si, ei;
 
-  if (what === 4) {
-    // 從指定音符起播
-    si = get_se(selx[0]);
-    if (!si) return;
-    play.si = si;
-    ei = play.ei;
-    play.repv = 0; loopCount = 0;
+  // ── [狀態機] IDLE 狀態：開始新播放 ──
+  addTunes();
+
+  var a = selx[0], b = selx[1], si, ei;
+
+  // ── 決定起點 ──────────────────────────────────────────────────
+  if (a) {
+    si = get_se(a);
   } else {
-    if (what === 1) {
-      // 選段播放
-      var a = selx[0], b = selx[1];
-      if (a && b) {
-        if (b < a) { var t = a; a = b; b = t; }
-        si = get_se(a);
-        ei = (a === b) ? get_measure_end(a) : get_ee_by_time(si, syms[b]);
-      } else if (a) {
-        si = get_se(a); ei = get_measure_end(a);
-      } else if (b) {
-        si = gsot(b); ei = get_ee(b);
-      }
-    } else {
-      // what=0：整首 / 重播，從 play.si 或第一個音符起播
-      si = play.si || first_sym();
-      ei = play.ei;
-      if (!si) return;
-    }
-    if (si && ei && si === ei) ei = get_measure_end(syms.indexOf(si));
-    play.si = si; play.ei = ei; play.repv = 0;
-    if (loopMode === 0) loopCount = 0;
+    si = play.si || first_sym();
+  }
+  if (!si) return;
+
+  // ── 決定終點 ──────────────────────────────────────────────────
+  if (a && b) {
+    // A/B 對調保護
+    if (b < a) { var t = a; a = b; b = t; si = get_se(a); }
+    ei = (a === b) ? get_measure_end(a) : get_ee_by_time(si, syms[b]);
+  } else if (!a && b) {
+    // 無 A 點但有 B 點：從 B 點所在序列起播到 B
+    si = gsot(b); ei = get_ee(b);
+  } else {
+    ei = null;  // 播到結尾
   }
 
-  // 狀態重設
+  // ── 狀態更新 ──────────────────────────────────────────────────
+  play.si = si; play.ei = ei;
+  play.repv = 0; loopCount = 0;
   selx_sav[0] = selx[0]; selx_sav[1] = selx[1];
-  play.stopping = false; play.curNotes = new Set(); play.lastNote = 0;
+  play.curNotes = new Set(); play.lastNote = 0;
   playStart(si, ei);
 }
 window.play_tune = play_tune;
 
+/**
+ * playStart() - 開始播放
+ *
+ * 狀態轉換：IDLE → PLAYING
+ */
 function playStart(si, ei) {
   if (!si) return;
   // 新播放開始時，確保清除任何殘留的 paused 狀態（_pausedPo = null 表示 not paused）
   play._pausedPo = null;
   // resume 時 anchor 狀態存在 sym 節點上，stop 後仍存活，不需要 reset jumpCtx
   _resetAllJumpCtx();
-  play.playing = true;
+
+  // ── [狀態機] 狀態轉換：IDLE → PLAYING ──
+  setState(PlayState.PLAYING, 'playStart');
   refreshToggleLabel();
+
   play.abcplay.play(si, ei, play.repv);
 }
 
