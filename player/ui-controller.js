@@ -285,19 +285,42 @@
      * 右鍵點擊處理：設 B 點（選段終點）。
      * 播放中即時調整終點：以目前 A 點（selx[0]）和新 B 點重算 ei。
      *
+     * Toggle 行為：右鍵再點同一 B 點音符 → 清除 B 點（播到曲尾）。
+     *   - selx[1] 歸零，高亮清除
+     *   - 播放中：po.s_end = null（自然結尾）、play.ei = null
+     *   - 循環計數歸零，UI 重新顯示
+     *
      * @param {MouseEvent} evt
      */
     onRightClick: function (evt) {
       evt.preventDefault();
       var v = UIController._getSymIndex(evt.target);
       if (!v) return;
-      // 右鍵點音符：設 B 點
-      UIController.setsel(1, v);
+
       var PlayState = _cfg.PlayState;
+      var selx = _cfg.getSelx();
+
+      // ── Toggle：右鍵再點同一 B 點 → 清除 B 點 ──────────────────────
+      if (v === selx[1]) {
+        UIController.setsel(1, 0);
+        if (_cfg.getState() === PlayState.PLAYING) {
+          // po.s_end = null → 播到曲尾；play.ei = null 同步
+          _cfg.api.setCurrentPoEnd(null);
+          _cfg.api.setPlayEi(null);
+          // 循環計數歸零，UI 從第一圈重新顯示
+          if (_cfg.getLoopMode() !== 0) {
+            _cfg.setLoopCount(0);
+            UIController.refreshToggleLabel();
+          }
+        }
+        return;
+      }
+
+      // ── 右鍵點新音符：設 B 點 ──────────────────────────────────────
+      UIController.setsel(1, v);
       if (_cfg.getState() === PlayState.PLAYING) {
         // 播放中即時調整終點：以目前 A 點（selx[0]）和新 B 點重算 ei
         // 與 play_tune 的 A/B 對調保護對齊：b < a 時 swap 後重算
-        var selx = _cfg.getSelx();
         var a = selx[0], b = v, si;
         if (a) {
           if (b < a) { var t = a; a = b; b = t; }
