@@ -2,9 +2,13 @@
 <html>
 <head><meta charset="UTF-8"></head>
 <body>
-<script src="../abc2svg/abc2svg_files/abc2svg-1.js"></script>
-<script src="../abc2svg/abc2svg_files/snd-1.js"></script>
-<script src="./loader.js"></script>
+<script src="/abc2svg/abc2svg_files/abc2svg-1.js"></script>
+<script src="/abc2svg/abc2svg_files/snd-1.js"></script>
+<script src="/player/jump-engine.js"></script>
+<script src="/player/hook-bridge.js"></script>
+<script src="/player/abcplay-driver.js"></script>
+<script src="/player/ui-controller.js"></script>
+<script src="/player/loader.js"></script>
 
 <!-- ═══════════════════════════════════════════════════
      等級 0：無跳轉（基準線）
@@ -277,6 +281,127 @@ K:C
 CDEF | GFED [| CDEF |: GFED :|
 CDEF :: GFED || CDEF [|] GFED
 CDEF |[| GFED :::|] CDEF : GFED |]
+</script>
+</div>
+
+<!-- ═══════════════════════════════════════════════════
+     等級 10：DC / DS 在 repeat 括弧內（新 case）
+     對應 bug：白牡丹 |: B !D.C.! | C :| 第一次不應跳
+════════════════════════════════════════════════════ -->
+
+<div class="tune-block">
+<p>T15 — D.C. 在 repeat 括弧內（白牡丹同結構）
+預期播放順序：
+  A（前奏）→ B !D.C.!（第一次，pass，不跳）→ C → repeat 回 B
+  B !D.C.!（第二次，enable，跳曲首）→ A → B → C → 結束</p>
+<script type="text/vnd.abc">
+X:15
+T:T15 D.C. 在 repeat 內
+M:4/4
+L:1/4
+Q:1/4=120
+K:C
+C D E F | |: G A !D.C.! B | c d e f :|
+</script>
+</div>
+
+<div class="tune-block">
+<p>T16 — D.C. 在 repeat 括弧內，無前奏段（|: 就是曲首）
+預期播放順序：
+  |: A !D.C.!（第一次，pass）→ B → repeat 回 A
+  A !D.C.!（第二次，enable，跳曲首）→ A → B → 結束</p>
+<script type="text/vnd.abc">
+X:16
+T:T16 D.C. 在 repeat 內（無前奏）
+M:4/4
+L:1/4
+Q:1/4=120
+K:C
+|: C D !D.C.! E F | G A B c :|
+</script>
+</div>
+
+<div class="tune-block">
+<p>T17 — D.S. 在 repeat 括弧內
+預期播放順序：
+  A → !segno! B → C !D.S.!（第一次，pass）→ D → repeat 回 B
+  B → C !D.S.!（第二次，enable，跳 segno）→ B → C → D → 結束</p>
+<script type="text/vnd.abc">
+X:17
+T:T17 D.S. 在 repeat 內
+M:4/4
+L:1/4
+Q:1/4=120
+K:C
+C D E F | !segno! G A B c | |: E F !D.S.! G A | B c d e :|
+</script>
+</div>
+
+<div class="tune-block">
+<p>T18 — D.C. al Fine 在 repeat 括弧內
+預期播放順序：
+  !fine! A → B !D.C.alfine!（第一次，pass）→ C → repeat 回 B
+  B !D.C.alfine!（第二次，enable，跳曲首）→ 到 !fine! 停止</p>
+<script type="text/vnd.abc">
+X:18
+T:T18 D.C.alfine 在 repeat 內
+M:4/4
+L:1/4
+Q:1/4=120
+K:C
+!fine! C D E F | |: G A !D.C.alfine! B | c d e f :|
+</script>
+</div>
+
+<div class="tune-block">
+<p>T19 — D.C. al Coda 在 repeat 括弧內
+預期播放順序：
+  A → !coda! B → C !D.C.alcoda!（第一次，pass）→ D → repeat 回 C
+  C !D.C.alcoda!（第二次，enable，跳曲首）→ A → B 遇 coda 分歧點跳出
+  !coda!（降落）：e f g a → 結束</p>
+<script type="text/vnd.abc">
+X:19
+T:T19 D.C.alcoda 在 repeat 內
+M:4/4
+L:1/4
+Q:1/4=120
+K:C
+C D E F | !coda! G A B c | |: E F !D.C.alcoda! G | A B c d :| !coda! e f g a |]
+</script>
+</div>
+
+<div class="tune-block">
+<p>T20 — D.C. 在 repeat 內，且 repeat 有 volta bracket
+結構：|: A |1 B !D.C.! :|2 C |
+預期（慣例 A，DC 後 repeat 從頭計數）：
+  前奏 → [1房 pass] → [1房 DC跳曲首，repn/repv 重置] → 前奏 → [1房] → [2房] → 結束
+驗證：_isInsideRepeat=true，第一次 pass；跳回後 po.repn=false / po.repv=1。</p>
+<script type="text/vnd.abc">
+X:20
+T:T20 D.C. 在 repeat 內 + volta bracket
+M:4/4
+L:1/4
+Q:1/4=120
+K:C
+C D E F | |: G A B c |1 !D.C.! E F G A :|2 c B A G |]
+</script>
+</div>
+
+<div class="tune-block">
+<p>T21 — D.C. 在 repeat 外（repeat 之後），對照組
+結構：|: A :| B !D.C.! |
+預期播放順序：
+  |: A :| repeat → A → B !D.C.!（立即跳，不需 pass）→ 曲首
+  A → repeat → A → B → 結束
+驗證：D.C. 在 :| 之後，_isInsideRepeat 應為 false，第一次即跳（T01 同類）。</p>
+<script type="text/vnd.abc">
+X:21
+T:T21 D.C. 在 repeat 外（對照組）
+M:4/4
+L:1/4
+Q:1/4=120
+K:C
+|: C D E F :| G A B c | !D.C.! z4 |]
 </script>
 </div>
 
