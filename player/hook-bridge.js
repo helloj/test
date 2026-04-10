@@ -6,10 +6,12 @@
  *   - 在 play_cont 的推進迴圈中攔截 anchor，委派給 JumpEngine.walkAnchors()
  *   - 透過 JumpEngine.getCtxForSym() 懶取得每個 tune 的 jumpCtx
  *   - 保存 play_cont reference 供 resumePlay 使用（[pause:*] patch）
+ *   - 填入 po._ballMeta 供 BallController 使用（[ball:*] patch）
  *
  * 依賴：
  *   - JumpEngine（全域，必須在本檔之前載入）
  *   - abc2svg（全域，必須在本檔之前載入）
+ *   - BallController（全域，可選；未載入時 ball patch 自動跳過）
  *
  * 版本同步說明：
  *   play_next / play_cont / do_tie / set_ctrl / get_part 複製自 snd-1.js。
@@ -21,12 +23,15 @@
  *     [pause:reset-timouts]  po.timouts=[] 之後，重置 po._onnoteTimouts
  *     [pause:track-onnote]   onnote on/off setTimeout 改存入 po._onnoteTimouts
  *     [pause:save-refs]      play_cont 排程前記錄 po._nextT；結尾存 po._play_cont
+ *     [ball:meta]            填入 po._ballMeta[i] = { durMs, nextIstart }
+ *                            第一個音符時直接呼叫 BallController.onPlayStart（需要 st）
  *
  * 載入順序（HTML）：
  *   <script src="abc2svg-1.js"></script>
  *   <script src="snd-1.js"></script>
  *   <script src="jump-engine.js"></script>
  *   <script src="hook-bridge.js"></script>   ← 本檔
+ *   <script src="ball-controller.js"></script>
  *   <script src="loader.js"></script>
  */
 
@@ -75,6 +80,14 @@
           ctx = null;
         }
 
+        // ── [ball:meta] init ──────────────────────────────────────
+        // 每次 play_next 入口重置，確保循環播放時第一個音符可重新觸發。
+        if (!po._ballFirstNote) {
+          po._ballFirstNote = false;  // false = 尚未通知 onPlayStart
+          po._ballMeta      = {};
+        }
+        // ── [ball:meta] init end ──────────────────────────────────
+
         // ── 以下為 snd-1.js 原文（do_tie）────────────────────────
         function do_tie(not_s,d){var i,s=not_s.s,C=abc2svg.C,v=s.v,end_time=s.time+s.dur,repv=po.repv
           while(1){s=s.ts_next
@@ -116,7 +129,22 @@
             po.v_c[p_v.v]=i}
           po.p_v[s2.v]=true}
 
-        // ── 以下為 snd-1.js 原文（play_cont）+ [B1][B2][pause:*] patch ──
+        // ── [ball:helper] ─────────────────────────────────────────
+        // findNextIstart(s) - 從 s.ts_next 往後找第一個有 istart 的可播音符
+        // 回傳 istart（number）或 null（曲尾）。
+        function findNextIstart(s) {
+          var C = abc2svg.C, cur = s.ts_next;
+          while (cur) {
+            if (!cur.noplay && cur.istart &&
+                (cur.type === C.NOTE || cur.type === C.REST || cur.type === C.GRACE))
+              return cur.istart;
+            cur = cur.ts_next;
+          }
+          return null;  // 曲尾
+        }
+        // ── [ball:helper] end ─────────────────────────────────────
+
+        // ── 以下為 snd-1.js 原文（play_cont）+ [B1][B2][pause:*][ball:*] patch ──
         function play_cont(po){var d,i,st,m,note,g,s2,t,maxt,now,p_v,C=abc2svg.C,s=po.s_cur
 
           function var_end(s){var i,s2,s3,a=s.rep_v||s.rep_s
@@ -230,6 +258,25 @@
                 var doff=st+d*1000
                 po._onnoteTimouts.push({id:setTimeout(po.onnote,doff,i,false),at:now+doff/1000,i:i,on:false})}
                 // ── [pause:track-onnote] end ──────────────────────────
+
+                // ── [ball:meta] ───────────────────────────────────────
+                // 填入 _ballMeta，供 BallController.onNoteOn 取用（由 abcplay-driver 呼叫）。
+                // 第一個音符在此直接呼叫 onPlayStart：
+                //   st = (t-now)*1000 是「on=true 距現在的 ms」，僅在排程階段有意義，
+                //   必須在 play_cont 內取用，無法延遲到 notehlight 觸發時。
+                if(root.BallController && s.istart){
+                  if(!po._ballMeta) po._ballMeta={}
+                  po._ballMeta[s.istart]={
+                    durMs:      d * 1000,
+                    nextIstart: findNextIstart(s)
+                  }
+                  if(po._ballFirstNote === false){
+                    po._ballFirstNote = true
+                    root.BallController.onPlayStart(s.istart, st)
+                  }
+                }
+                // ── [ball:meta] end ───────────────────────────────────
+
               break}}
           while(1){if(!s||s==po.s_end||!s.ts_next||s.ts_next==po.s_end||po.stop){if(po.onend)
               setTimeout(po.onend,(t-now+d)*1000,po.repv)
