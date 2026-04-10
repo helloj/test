@@ -753,6 +753,12 @@
     // resume 時 anchor 狀態存在 sym 節點上，stop 後仍存活，不需要 reset jumpCtx
     JumpEngine.resetAllContexts();
 
+    // ── [GEN] 遞增播放世代號 ──────────────────────────────────────
+    // 通知 HookBridge 進入新世代，讓上一輪播放殘存的 play_cont 排程
+    // 在下次觸發時自動識別並靜默退出，不干擾新播放。
+    if (root.HookBridge) root.HookBridge.newGeneration();
+    // ── [GEN] end ─────────────────────────────────────────────────
+
     // ── [狀態機] 狀態轉換：IDLE → PLAYING ──
     setState(PlayState.PLAYING, 'playStart');
     play.onStateChange();

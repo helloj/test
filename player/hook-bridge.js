@@ -16,6 +16,12 @@
  * 版本同步說明：
  *   play_next / play_cont / do_tie / set_ctrl / get_part 複製自 snd-1.js。
  *   snd-1.js 升級時，重新複製上述四個函數後，貼回以下標記的修補段：
+ *     [stop-guard]      play_next 入口最前面：po.stop 快速退出守衛
+ *                       （原版 snd-1.js play_next 末段的同名檢查移至此處，
+ *                        防止 Audio5.stop() 呼叫 play_next 時走進 play_cont
+ *                        製造殭屍排程）
+ *     [GEN]             play_cont 開頭：_playGeneration 世代守衛，
+ *                       過濾 stop 後殘存的舊世代 setTimeout(play_cont,...)
  *     [B1]              play_cont 推進迴圈前：起點落在 anchor 時走過
  *                       + DC/DS 跳轉後重置 po.repn=false / po.repv=1（慣例 A）
  *     [B2]              play_cont 內層 while：中途遇到 anchor 時跳轉
@@ -24,6 +30,7 @@
  *     [pause:track-onnote]   onnote on/off setTimeout 改存入 po._onnoteTimouts
  *     [pause:save-refs]      play_cont 排程前記錄 po._nextT；結尾存 po._play_cont
  *     [ball:meta]            填入 po._ballMeta[i] = { durMs, nextIstart }
+ *                            nextIstart 查找邏輯內聯在 [ball:meta] 區塊內
  *                            第一個音符時直接呼叫 BallController.onPlayStart（需要 st）
  *
  * 載入順序（HTML）：
@@ -38,12 +45,38 @@
 ;(function (root) {
   'use strict';
 
+  // ── 殘存排程防護（_playGeneration）──────────────────────────────────
+  //
+  // 每次 playStart() 開始新播放時，由 abcplay-driver.js 呼叫
+  // HookBridge.newGeneration() 遞增此值。
+  //
+  // play_cont 首次進入（po._gen === undefined）時將當前世代號寫入 po._gen。
+  // 後續所有 setTimeout(play_cont,...) 回呼進入時比對 po._gen：
+  //   - 相符：合法的當代排程，正常執行
+  //   - 不符：舊世代殘存排程（stop 後漏網的 setTimeout），立即清乾淨後 return
+  //
+  // 與 _resumeGen（防 pause/resume race condition）互相獨立，各管一層。
+  //
+  var _playGeneration = 0;
+
   // ── HookBridge.setup() ───────────────────────────────────────────
   //
   // 唯一的公開入口。由 loader.js 的 Section 3 位置呼叫（頁面載入時立即執行）。
   // 執行後 abc2svg.play_next 被完整替換；orig_play_next 存底以備不時之需。
   //
   var HookBridge = {
+
+    /**
+     * newGeneration()
+     *
+     * 遞增播放世代號。
+     * 由 abcplay-driver.js 的 playStart() 在每次新播放開始前呼叫。
+     * 遞增後，所有持有舊世代號（po._gen !== _playGeneration）的
+     * play_cont 回呼在下次觸發時將自動清除並靜默退出。
+     */
+    newGeneration: function () {
+      ++_playGeneration;
+    },
 
     /**
      * setup()
@@ -57,6 +90,19 @@
       var orig_play_next = abc2svg.play_next;
 
       abc2svg.play_next = function(po) {
+
+        // ── [stop-guard] po.stop 快速退出 ────────────────────────
+        // Audio5.stop() 會設 po.stop=true 後呼叫 abc2svg.play_next(po) 做收尾。
+        // 原版 snd-1.js 在 play_next 末段才檢查 po.stop；
+        // 但本版 play_next 在末段之前就進入 play_cont，若不在此攔截，
+        // play_cont 會重新排程新的 setTimeout(play_cont,...)，
+        // 製造殭屍排程（stop 後仍持續觸發），且無法被後續 stop/pause 消滅。
+        // 移至入口最前面，確保 stop 路徑不進入任何播放邏輯。
+        if (po.stop) {
+          if (po.onend) po.onend(po.repv);
+          return;
+        }
+        // ── [stop-guard] end ─────────────────────────────────────
 
         // ── 最小修補：instrument filter ──────────────────────────
         if (po.note_run && !po.note_run._patched && po.params) {
@@ -129,23 +175,28 @@
             po.v_c[p_v.v]=i}
           po.p_v[s2.v]=true}
 
-        // ── [ball:helper] ─────────────────────────────────────────
-        // findNextIstart(s) - 從 s.ts_next 往後找第一個有 istart 的可播音符
-        // 回傳 istart（number）或 null（曲尾）。
-        function findNextIstart(s) {
-          var C = abc2svg.C, cur = s.ts_next;
-          while (cur) {
-            if (!cur.noplay && cur.istart &&
-                (cur.type === C.NOTE || cur.type === C.REST || cur.type === C.GRACE))
-              return cur.istart;
-            cur = cur.ts_next;
-          }
-          return null;  // 曲尾
-        }
-        // ── [ball:helper] end ─────────────────────────────────────
-
-        // ── 以下為 snd-1.js 原文（play_cont）+ [B1][B2][pause:*][ball:*] patch ──
+        // ── 以下為 snd-1.js 原文（play_cont）+ [GEN][B1][B2][pause:*][ball:*] patch ──
         function play_cont(po){var d,i,st,m,note,g,s2,t,maxt,now,p_v,C=abc2svg.C,s=po.s_cur
+
+          // ── [GEN] 殘存排程防護 ────────────────────────────────────
+          // 首次進入（po 剛由 Audio5.play 建立，po._gen 尚未定義）：
+          //   綁定當前世代號，後續回呼以此比對。
+          // 後續 setTimeout(play_cont,...) 回呼進入時：
+          //   若世代號不符，表示這是舊世代殘存排程（例如 stop 後漏網的 setTimeout），
+          //   清乾淨後靜默退出，不觸發任何副作用。
+          if(po._gen === undefined){
+            po._gen = _playGeneration;
+          }
+          if(po._gen !== _playGeneration){
+            po.timouts.forEach(function(id){ clearTimeout(id); });
+            po.timouts = [];
+            if(po._onnoteTimouts){
+              po._onnoteTimouts.forEach(function(e){ clearTimeout(e.id); });
+              po._onnoteTimouts = [];
+            }
+            return;
+          }
+          // ── [GEN] end ─────────────────────────────────────────────
 
           function var_end(s){var i,s2,s3,a=s.rep_v||s.rep_s
             var ti=0
@@ -266,9 +317,16 @@
                 //   必須在 play_cont 內取用，無法延遲到 notehlight 觸發時。
                 if(root.BallController && s.istart){
                   if(!po._ballMeta) po._ballMeta={}
+                  // findNextIstart：從 s.ts_next 找第一個有 istart 的可播音符
+                  var _bnext=s.ts_next
+                  while(_bnext){
+                    if(!_bnext.noplay&&_bnext.istart&&
+                       (_bnext.type===C.NOTE||_bnext.type===C.REST||_bnext.type===C.GRACE))
+                      break
+                    _bnext=_bnext.ts_next}
                   po._ballMeta[s.istart]={
                     durMs:      d * 1000,
-                    nextIstart: findNextIstart(s)
+                    nextIstart: _bnext ? _bnext.istart : null
                   }
                   if(po._ballFirstNote === false){
                     po._ballFirstNote = true
