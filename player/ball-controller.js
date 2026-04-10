@@ -37,6 +37,7 @@
  *   │   ↓ on=true 落地，立刻以 dur 為時長起飛飛向 next              │
  *   │ FLYING         飛向 next 音符（同行 / 換行 / 曲尾）            │
  *   │   ↓ 換行：先飛到右邊界（WRAP_TO_EDGE_RATIO），再從左邊界飛到 next（WRAP_TO_NOTE_RATIO）│
+ *   │   ↓ 選段 B 點：原地跳躍（fromX→fromX），不理 next，不換行     │
  *   │ DONE           停在右邊界（曲尾後淡出）                        │
  *   └──────────────────────────────────────────────────────────────┘
  *
@@ -596,16 +597,19 @@
     },
 
     /**
-     * onNoteOn(istart) - 音符點亮（on=true）
+     * onNoteOn(istart, isAtB) - 音符點亮（on=true）
      *
      * 小球落地，立刻以 durMs 為時長起飛飛向 next 音符。
      * 換行時分兩段：先飛右邊界（WRAP_TO_EDGE_RATIO），再飛 next（WRAP_TO_NOTE_RATIO）。
      * 曲尾時飛向右邊界後進入 done 狀態。
      *
+     * isAtB = true（選段 B 點）：原地跳躍，不理 next，不換行，
+     *   避免換行第二段從左邊界冒出的突兀感。
+     *
      * meta 由 hook-bridge.js 填入 po._ballMeta[istart]：
      *   { durMs: number, nextIstart: number|null }
      */
-    onNoteOn: function (istart) {
+    onNoteOn: function (istart, isAtB) {
       var po   = abc2svg && abc2svg._current_po;
       var meta = po && po._ballMeta && po._ballMeta[istart];
       if (!meta) return;
@@ -619,6 +623,16 @@
       var fromPos = _livePos[istart];
       var fromX   = fromPos ? fromPos.cx : _ball.toX;
       var fromY   = fromPos ? fromPos.cy : _ball.toY;
+
+      // ── 選段 B 點：原地跳躍，不理 next，不換行 ──────────────────
+      // 避免 next 在下一行時，換行第二段從左邊界冒出的突兀感。
+      // 飛行結束後進入 idle_at_note，等待 onPlayEnd 清除。
+      if (isAtB) {
+        _setActiveIstarts([istart]);
+        _startFly(fromX, fromY, fromX, fromY, durMs, istart);
+        _ensureRaf();
+        return;
+      }
 
       if (!nextIstart) {
         // ── 曲尾：飛向右邊界後淡出 ──────────────────────────────

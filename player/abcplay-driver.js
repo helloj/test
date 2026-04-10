@@ -402,7 +402,11 @@
     // on=true 時通知 BallController 落地並起飛向 next 音符。
     // onPlayStart（drop_wait 排程）已在 hook-bridge play_cont 排程階段呼叫，
     // 此處只需觸發落地動作。
-    if (on && root.BallController) root.BallController.onNoteOn(i);
+    // isAtB：當前音符正好是 B 點（選段終點），球應原地跳躍，不飛向 next。
+    if (on && root.BallController) {
+      var isAtB = !!(selx[1] && i === selx[1]);
+      root.BallController.onNoteOn(i, isAtB);
+    }
     // ── [ball:on-note] end ────────────────────────────────────────
   }
 
