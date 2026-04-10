@@ -225,13 +225,6 @@
   // 工具函式（私有）
   // ══════════════════════════════════════════
 
-  // getSymIndex：供向下相容，點擊事件已移至 UIController._getSymIndex。
-  function getSymIndex(el) {
-    var cl = el && el.getAttribute && el.getAttribute('class');
-    var m  = cl && cl.match(/_(\d+)_/);
-    return m ? Number(m[1]) : 0;
-  }
-
   /**
    * addTunes() - 將 abc2svg 解析出的曲子登記到後端並建立 JumpEngine 上下文
    *

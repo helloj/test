@@ -65,7 +65,7 @@
 
   var BALL_R      = 6;      // 小球半徑（px）
   var LEAD_MS     = 100;    // 第一個音符掉落動畫時長（ms）
-  var BOUNCE_H    = 28;     // 跳躍弧高（px，拋物線頂點相對於端點的高度）
+  var BOUNCE_H    = 27;     // 跳躍弧高（px，拋物線頂點相對於端點的高度）
   var FADE_MS     = 600;    // 曲尾淡出時間（ms）
   var ROW_THRESH  = 20;     // 換行判斷閾值（px，兩音符 DOM Y 差距超過此值視為換行）
   var BALL_COLOR  = 'rgba(220, 60, 60, 0.85)';  // 小球顏色
@@ -134,7 +134,6 @@
     wrapDur:      0,     // 換行第二段的持續時長（ms）
 
     // ── 第一音符掉落與 drop_wait ─────────────────────────────────
-    bounceX:      0,     // 已廢棄，保留供 onResume fallback 讀取
     _firstIstart: null,  // 第一個音符的 istart（drop_wait / onResume 用）
 
     // ── 第一音符掉落（drop）──────────────────────────────────────
@@ -209,7 +208,7 @@
     if (!el) return null;
     var r = el.getBoundingClientRect();
     return {
-      cx: r.left + r.width  / 2,
+      cx: r.left + r.width / 2,
       cy: r.top  + r.height / 2
     };
   }
@@ -324,6 +323,24 @@
       cancelAnimationFrame(_rafId);
       _rafId = null;
     }
+  }
+
+  /**
+   * _resetLead(pausedAt) - 取消提前起飛的 setTimeout 並重置所有相關旗標
+   *
+   * 重置：_leadTimeoutId / _leadScheduledAt / _leadPausedAt。
+   *
+   * @param {number} [pausedAt] - 傳入 performance.now() 時，將 _leadPausedAt
+   *   設為該時間點（onPause 用，供 onResume 計算剩餘等待）；
+   *   省略時 _leadPausedAt 歸零（onPlayStart / onPlayEnd 用）。
+   */
+  function _resetLead(pausedAt) {
+    if (_leadTimeoutId !== null) {
+      clearTimeout(_leadTimeoutId);
+      _leadTimeoutId = null;
+    }
+    _leadScheduledAt = -1;
+    _leadPausedAt    = (pausedAt !== undefined) ? pausedAt : -1;
   }
 
   /**
@@ -534,13 +551,11 @@
      */
     onPlayStart: function (firstIstart, firstOnMs) {
       _stopRaf();
-      if (_leadTimeoutId !== null) { clearTimeout(_leadTimeoutId); _leadTimeoutId = null; }
+      _resetLead();
       _firstNoteScheduled  = false;
       _ball.wrapPending    = false;
       _ball.pausedProgress = -1;
       _ball._afterFlyToDone = false;
-      _leadPausedAt        = -1;
-      _leadScheduledAt     = -1;
 
       // 即時取第一音符座標
       _setActiveIstarts([firstIstart]);
@@ -645,9 +660,7 @@
      * 清除小球，停止 rAF。
      */
     onPlayEnd: function () {
-      if (_leadTimeoutId !== null) { clearTimeout(_leadTimeoutId); _leadTimeoutId = null; }
-      _leadPausedAt             = -1;
-      _leadScheduledAt          = -1;
+      _resetLead();
       _stopRaf();
       _clearCanvas();
       _activeIstarts            = [];
@@ -676,12 +689,9 @@
      */
     onPause: function () {
       // ── leadTimeout 保存 ──────────────────────────────────────────
-      if (_leadTimeoutId !== null) {
-        clearTimeout(_leadTimeoutId);
-        _leadTimeoutId = null;
-        // 記錄暫停時間點，供 onResume 計算剩餘等待
-        _leadPausedAt = performance.now();
-      }
+      // timeout 在跑時傳入 performance.now()，_resetLead 將其存入
+      // _leadPausedAt 供 onResume 計算剩餘等待；沒有 timeout 時歸零。
+      _resetLead(performance.now());
 
       if (_ball.state === 'flying' && _ball.pausedProgress < 0) {
         // 記錄當前進度，讓 _tick 停止推進時間
@@ -704,19 +714,20 @@
       if (_leadPausedAt >= 0 && _leadScheduledAt >= 0 && !_firstNoteScheduled) {
         var elapsed   = _leadPausedAt - _leadScheduledAt;
         var remaining = Math.max(0, (_ball._leadDelay || 0) - elapsed);
-        var leftX2    = _ball.bounceX;
-        var firstY2   = window.innerHeight / 2;  // fallback
+        var firstY2   = window.innerHeight / 2;  // fallback（_livePos 尚未更新時）
         _leadScheduledAt = performance.now();
+        // _leadScheduledAt 此處重設，確保若補排後再次 onPause，
+        // 下一次 onResume 的 elapsed 計算仍以本次排程為基準。
         _ball._leadDelay = remaining;
         _leadTimeoutId = setTimeout(function () {
           _leadTimeoutId   = null;
           _leadScheduledAt = -1;
-          _leadPausedAt    = -1;
+          _leadPausedAt    = -1;  // timeout 觸發後的收尾清除
           if (_ball.state !== 'drop_wait') return;  // guard 改為 drop_wait
           // 起飛前重查座標
           _setActiveIstarts([_ball._firstIstart]);
           var lp  = _livePos[_ball._firstIstart];
-          var rx  = lp ? lp.cx : leftX2;
+          var rx  = lp ? lp.cx : _svgLeftEdge() + BALL_R;  // fallback 對齊換行起點
           var ry  = lp ? lp.cy : firstY2;
           var dropY = ry - BOUNCE_H;
           _stopRaf();
@@ -725,7 +736,7 @@
           _firstNoteScheduled = true;
           _ensureRaf();
         }, remaining);
-        _leadPausedAt = -1;
+        _leadPausedAt = -1;  // 補排完立刻歸零，防止重複呼叫 onResume 再次補排
       }
 
       // ── flying 繼續 ───────────────────────────────────────────────

@@ -308,10 +308,7 @@
           _cfg.api.setCurrentPoEnd(null);
           _cfg.api.setPlayEi(null);
           // 循環計數歸零，UI 從第一圈重新顯示
-          if (_cfg.getLoopMode() !== 0) {
-            _cfg.setLoopCount(0);
-            UIController.refreshToggleLabel();
-          }
+          UIController._resetLoopIfActive();
         }
         return;
       }
@@ -335,10 +332,7 @@
           _cfg.api.setCurrentPoEnd(newEi);
           _cfg.api.setPlayEi(newEi);
           // 選段範圍變更：循環計數歸零，UI 從第一圈重新顯示
-          if (_cfg.getLoopMode() !== 0) {
-            _cfg.setLoopCount(0);
-            UIController.refreshToggleLabel();
-          }
+          UIController._resetLoopIfActive();
         }
       }
     },
@@ -469,6 +463,19 @@
       var c = el.getAttribute('class') || '';
       var m = c.match(/_(\d+)_/);
       return m ? parseInt(m[1]) : null;
+    },
+
+    /**
+     * _resetLoopIfActive()
+     *
+     * 若循環模式已啟用，將 loopCount 歸零並刷新循環圖示。
+     * 在 B 點變更時（清除或設新）呼叫，確保 UI 從第一圈重新顯示。
+     */
+    _resetLoopIfActive: function () {
+      if (_cfg.getLoopMode() !== 0) {
+        _cfg.setLoopCount(0);
+        UIController.refreshToggleLabel();
+      }
     },
 
     /**
