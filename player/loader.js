@@ -30,6 +30,7 @@
  *   <script src="hook-bridge.js"></script>
  *   <script src="abcplay-driver.js"></script>
  *   <script src="ui-controller.js"></script>
+ *   <script src="ball-controller.js"></script>
  *   <script src="loader.js"></script>
  *
  *   <!-- 每首曲子放在獨立的區塊 -->
@@ -239,6 +240,15 @@ function dom_loaded() {
       slots[_k].onclick       = function (e) { UIController.onLeftClick(e); };
       slots[_k].oncontextmenu = function (e) { UIController.onRightClick(e); };
     }
+
+    // ── [ball:init] ───────────────────────────────────────────────
+    // 渲染完成後初始化小球畫布（冪等）。
+    // 座標採即時查詢策略，不需要預建位置表。
+    if (window.BallController) {
+      BallController.init();
+    }
+    // ── [ball:init] end ───────────────────────────────────────────
+
     // 後端注入：等待 AbcPlay 可用後呼叫 AbcplayDriver.setBackend()
     // AbcplayDriver 持有 onPlaybackEnd / notehlight 的私有引用，
     // 此處只負責建立後端實例並傳入，不暴露 Driver 內部細節。

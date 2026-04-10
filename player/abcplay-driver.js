@@ -404,6 +404,13 @@
 
     // DOM 高亮操作委派給 UIController
     play.onNoteHighlight(i, on);
+
+    // ── [ball:on-note] ────────────────────────────────────────────
+    // on=true 時通知 BallController 落地並起飛向 next 音符。
+    // onPlayStart（drop_wait 排程）已在 hook-bridge play_cont 排程階段呼叫，
+    // 此處只需觸發落地動作。
+    if (on && root.BallController) root.BallController.onNoteOn(i);
+    // ── [ball:on-note] end ────────────────────────────────────────
   }
 
   // ══════════════════════════════════════════
@@ -470,6 +477,10 @@
     setState(PlayState.PAUSED, 'pausePlay');
     play._pausedPo = po;
     play.onStateChange();
+
+    // ── [ball:pause] ──────────────────────────────────────────────
+    if (root.BallController) root.BallController.onPause();
+    // ── [ball:pause] end ──────────────────────────────────────────
   }
 
   /**
@@ -533,6 +544,10 @@
         delay = Math.max(0, (play._nextContAt - ac.currentTime) * 1000);
       play._nextContAt = null;
       po.timouts.push(setTimeout(po._play_cont, delay, po));
+
+      // ── [ball:resume] ─────────────────────────────────────────
+      if (root.BallController) root.BallController.onResume();
+      // ── [ball:resume] end ─────────────────────────────────────
 
       play.onStateChange();
     });
@@ -602,6 +617,10 @@
 
     // ── [狀態機] 狀態轉換：PLAYING / STOPPING → IDLE ──
     setState(PlayState.IDLE, 'onPlaybackEnd');
+
+    // ── [ball:play-end] ───────────────────────────────────────────
+    if (root.BallController) root.BallController.onPlayEnd();
+    // ── [ball:play-end] end ───────────────────────────────────────
 
     play.repv = repv;
     selx_sav[0] = selx[0]; selx_sav[1] = selx[1];
