@@ -56,6 +56,17 @@
   var _cfg = null;            // init() 注入的 config 物件
   var _scrollPending = false; // [scroll] 防抖旗標：smooth 動畫期間鎖住重複觸發
 
+  // [playline] 獨立 overlay 細線池（方案 B）
+  // 不動 .abcr rect，用 position:fixed 的 <div> 疊在音符左邊界。
+  // 預建固定數量（PLAYLINE_POOL_SIZE），避免動態建立元素。
+  // _linePool       : 空閒的 div 陣列
+  // _lineMap        : Map<istart, {div, elt}>，記錄哪個 istart 佔用了哪個 div
+  // _highlightWidth : null = fill（與音符等寬色塊）；數字 = line（固定寬細線 px）
+  var PLAYLINE_POOL_SIZE = 4;
+  var _linePool        = [];           // Array<div>（空閒）
+  var _lineMap         = new Map();    // Map<istart, {div, elt}>（使用中）
+  var _highlightWidth  = 3;         // null=fill | number=line px，預設 fill
+
   // ── 公開物件 ──────────────────────────────────────────────────────
   var UIController = {
 
@@ -83,8 +94,13 @@
      */
     init: function (cfg) {
       _cfg = cfg;
+      UIController._buildLinePool();
       UIController._setupButtons();
       UIController._setupSpeedPanel();
+      // [playline] 捲動時重新定位所有顯示中的細線
+      window.addEventListener('scroll', function () {
+        UIController._repositionLines();
+      }, { passive: true });
     },
 
     /**
@@ -135,6 +151,12 @@
         ".abcr{fill:#8b3a3a;fill-opacity:0;z-index:15}",
         ".abcr.sel{fill:#3cc878}",
         ".abcr.selb{fill:#e07b00}",
+        /* [playline] 播放中音符高亮：fixed overlay，不影響 SVG layout           */
+        /* left:0;top:0 固定在原點，實際位置完全由 transform:translate 控制        */
+        /* will-change:transform 提示瀏覽器提升到獨立 GPU layer，定位零 Layout     */
+        /* width/height 由 _positionLine 動態設定，與對應 .abcr rect 尺寸一致     */
+        ".playline{position:fixed;left:0;top:0;background:#8b3a3a;opacity:0;pointer-events:none;z-index:20;border-radius:1px;will-change:transform}",
+        ".playline.on{opacity:0.4}",
         "#errbanner{display:none;background:#c0392b;color:#fff;padding:6px 16px;font-size:.82rem;cursor:pointer}",
         ".tune-block{border:1px solid #ccc;border-radius:6px;margin:16px auto;max-width:85%;padding:12px 16px 0;background:#fffdf8}",
         ".tune-block p{margin:0 0 6px;font-size:.88rem;color:#444;white-space:pre-wrap;font-family:monospace}",
@@ -397,10 +419,20 @@
      *
      * 清除全部播放中音符高亮（pause / resume 時呼叫）。
      * 由 getCallbacks().onClearHighlight 回傳，填入 play.onClearHighlight。
+     *
+     * [playline] 將 _lineMap 所有使用中的 div 隱藏並歸還 _linePool。
+     * _lineMap.clear() 比 new Map() 更輕量，不觸發 GC。
+     * _cfg.clearCurNotes() 維持與 Driver 層的計數合約。
      */
     clearAllHighlight: function () {
-      var curNotes = _cfg.getCurNotes();
-      curNotes.forEach(function (i) { UIController.setNoteOp(i, false); });
+      // ── [playline] 歸還所有使用中的線條 div ──────────────────────────
+      _lineMap.forEach(function (entry) {
+        entry.div.classList.remove('on');
+        _linePool.push(entry.div);
+      });
+      _lineMap.clear();   // 比 new Map() 更輕量，不觸發 GC
+
+      // ── Driver 層計數清除（維持 curNotes 合約）───────────────────────
       _cfg.clearCurNotes();
     },
 
@@ -414,8 +446,11 @@
      * 設定單一音符的高亮狀態，並在音符進入視窗邊緣時自動捲動。
      * 由 getCallbacks().onNoteHighlight 回傳，填入 play.onNoteHighlight。
      *
-     * 選取 marker 保護：若 i 是 A/B 點（selx / selx_sav），
-     * on=false 時仍保持 0.4 不清除（選取高亮優先）。
+     * [playline] 方案 B：完全不動 .abcr rect，改用獨立 overlay div 顯示細線。
+     *   on=true ：從 _linePool 取 div，定位到音符左邊界，顯示；存入 _lineMap。
+     *   on=false：從 _lineMap 取 div，隱藏，歸還 _linePool；從 _lineMap 刪除。
+     *   .abcr rect 的 fillOpacity 不再操作（高亮完全由細線負責）。
+     *   A/B 點選取高亮（setOpacity）維持不變，不受此函式影響。
      *
      * 捲動邏輯：
      *   觸發條件：音符進入下 1/5（bottom 超過 4/5 高度）或超出上緣（top < 20）
@@ -428,13 +463,28 @@
     setNoteOp: function (i, on) {
       var elts = document.getElementsByClassName('_' + i + '_');
       if (!elts || !elts.length) return;
-      var selx    = _cfg.getSelx();
-      var selxSav = _cfg.getSelxSav();
-      var isMarker = (i === selx[0] || i === selxSav[0] || i === selx[1] || i === selxSav[1]);
-      var op = on ? 0.4 : (isMarker ? 0.4 : 0);
-      for (var j = 0; j < elts.length; j++) elts[j].style.fillOpacity = op;
+
       if (on) {
-        var r = elts[0].getBoundingClientRect();
+        // ── [playline] on：取 div，定位，顯示 ───────────────────────────
+        var elt = elts[0];
+        var r   = elt.getBoundingClientRect();  // .abcr 未被動過，座標正確
+
+        if (!_lineMap.has(i)) {
+          // [優化3] pool 耗盡時自動補充一個，避免靜默失敗
+          if (_linePool.length === 0) {
+            var extra = document.createElement('div');
+            extra.className = 'playline';
+            document.body.appendChild(extra);
+            _linePool.push(extra);
+          }
+          var div = _linePool.pop();
+          UIController._positionLine(div, r);
+          div.classList.add('on');
+          // [優化2] 同時存 elt 引用，_repositionLines 不需要再 querySelector
+          _lineMap.set(i, { div: div, elt: elt });
+        }
+
+        // ── 捲動邏輯 ──────────────────────────────────────────────────
         var triggerLow  = r.bottom > window.innerHeight * 4 / 5;
         var triggerHigh = r.top < 20;
         if ((triggerLow || triggerHigh) && !_scrollPending) {
@@ -442,12 +492,94 @@
           window.scrollBy({ top: r.top - window.innerHeight / 3, behavior: 'smooth' });
           setTimeout(function () { _scrollPending = false; }, 500);
         }
+
+      } else {
+        // ── [playline] off：隱藏，歸還 ──────────────────────────────────
+        if (_lineMap.has(i)) {
+          var entry  = _lineMap.get(i);
+          entry.div.classList.remove('on');
+          _linePool.push(entry.div);
+          _lineMap.delete(i);
+        }
       }
+    },
+
+    /**
+     * setHighlightMode(mode)
+     *
+     * 切換播放中音符的高亮樣式。
+     *
+     * @param {string} mode
+     *   'fill' - 與音符等寬色塊（預設）
+     *   'line' - 左邊界固定寬細線（3px）
+     *
+     * 切換時立即重新定位所有顯示中的高亮 div，不需要重新播放。
+     * 若需要自訂線寬，可直接設 _highlightWidth（模組內部使用）。
+     */
+    setHighlightMode: function (mode) {
+      _highlightWidth = (mode === 'line') ? 3 : null;
+      // 立即套用至目前顯示中的所有 div
+      _lineMap.forEach(function (entry) {
+        UIController._positionLine(entry.div, entry.elt.getBoundingClientRect());
+      });
     },
 
     // ══════════════════════════════════════════
     // 內部私有方法
     // ══════════════════════════════════════════
+
+    /**
+     * _buildLinePool()
+     *
+     * 預建 PLAYLINE_POOL_SIZE 個 .playline div，掛到 body，全部隱藏。
+     * 在 init() 內呼叫一次，之後不再建立新元素。
+     */
+    _buildLinePool: function () {
+      for (var i = 0; i < PLAYLINE_POOL_SIZE; i++) {
+        var div = document.createElement('div');
+        div.className = 'playline';
+        document.body.appendChild(div);
+        _linePool.push(div);
+      }
+    },
+
+    /**
+     * _positionLine(div, r)
+     *
+     * 將 div 定位並縮放至對應音符的位置與尺寸。
+     * r = getBoundingClientRect()，viewport 座標。
+     *
+     * [GPU] 定位改用 transform:translate 而非 left/top，
+     * 配合 will-change:transform，瀏覽器將此元素提升到獨立 compositor layer，
+     * 每次定位只在 GPU 上執行，零 CPU Layout/Paint，不干擾 rAF。
+     *
+     * width 由 _highlightWidth 決定：
+     *   null（fill 模式）→ r.width，與音符等寬色塊
+     *   數字（line 模式）→ 固定寬度（px），左邊界細線
+     * height 只在變化時設定，後續同行音符只需更新 transform。
+     *
+     * @param {HTMLElement} div
+     * @param {DOMRect}     r
+     */
+    _positionLine: function (div, r) {
+      div.style.transform = 'translate(' + r.left + 'px,' + r.top + 'px)';
+      var w = (_highlightWidth !== null ? _highlightWidth : r.width) + 'px';
+      var h = r.height + 'px';
+      if (div.style.width  !== w) div.style.width  = w;
+      if (div.style.height !== h) div.style.height = h;
+    },
+
+    /**
+     * _repositionLines()
+     *
+     * 捲動 / resize 時重新定位所有顯示中的高亮 div。
+     * [優化2] _lineMap value 存有 elt 引用，直接用，零 DOM query。
+     */
+    _repositionLines: function () {
+      _lineMap.forEach(function (entry) {
+        UIController._positionLine(entry.div, entry.elt.getBoundingClientRect());
+      });
+    },
 
     /**
      * _getSymIndex(el)

@@ -105,6 +105,17 @@
   var _activeIstarts = [];
 
   /**
+   * [優化4] 有效 istart 快取：Set<istart>
+   *
+   * 記錄已確認有對應 .abcr DOM 元素的 istart。
+   * 用途：_setActiveIstarts 過濾無效 istart（多聲部靜音聲部）時，
+   * 第一次查 querySelector，之後直接查快取，避免每次 onNoteOn 都查 DOM。
+   *
+   * 清除時機：doRender 重新渲染時（由 BallController.init 或外部重置呼叫 _clearValidCache）。
+   */
+  var _validIstarts = new Set();  // Set<istart>，已知有 DOM 的 istart
+
+  /**
    * 小球狀態機
    *
    * state:
@@ -199,7 +210,7 @@
    *
    * @param  {number} istart
    * @returns {{ cx: number, cy: number }|null}
-   *   cx = 音符矩形水平中心 X（viewport）
+   *   cx = 音符矩形左邊界 X（viewport）—— 對齊 [playline] 垂直細線位置
    *   cy = 音符矩形垂直中心 Y（viewport）
    *   null = 找不到對應元素
    */
@@ -209,7 +220,7 @@
     if (!el) return null;
     var r = el.getBoundingClientRect();
     return {
-      cx: r.left + r.width / 2,
+      cx: r.left,               // [playline] 左邊界，與垂直細線對齊
       cy: r.top  + r.height / 2
     };
   }
@@ -220,10 +231,25 @@
    * 在起飛（onNoteOn / leadTimeout）時呼叫，設定當前需追蹤的 istart 集合。
    * 同時呼叫 _refreshLivePos() 立刻填入最新座標。
    *
-   * @param {Array} list  istart 陣列，falsy 值自動過濾
+   * [多聲部過濾] 多聲部情況下（如 V:2 純 MIDI 伴奏），部分 istart 沒有對應的
+   * .abcr DOM 元素（例如 %%MIDI control 7 0 的靜音聲部）。這類 istart 保留在
+   * _activeIstarts 會導致 scroll 時查不到座標，並覆蓋有效聲部的 _livePos。
+   *
+   * [優化4] 使用 _validIstarts 快取：第一次遇到的 istart 才查 querySelector，
+   * 之後直接查 Set，避免每次 onNoteOn 都查 DOM。
+   *
+   * @param {Array} list  istart 陣列，falsy 值與無 DOM 元素的值自動過濾
    */
   function _setActiveIstarts(list) {
-    _activeIstarts = list.filter(Boolean);
+    _activeIstarts = list.filter(function (v) {
+      if (!v) return false;
+      if (_validIstarts.has(v)) return true;          // 快取命中，直接通過
+      if (document.querySelector('._' + v + '_')) {   // 首次：查 DOM
+        _validIstarts.add(v);                         // 加入快取
+        return true;
+      }
+      return false;                                   // 無 DOM，過濾掉
+    });
     _refreshLivePos();
   }
 
@@ -432,8 +458,12 @@
             var wrapToX    = wrapPos ? wrapPos.cx : 0;
             var wrapToY    = wrapPos ? wrapPos.cy : _ball.toY;
             var leftX      = _svgLeftEdge() + BALL_R;
-            // 更新活躍列表：第二段只追蹤 wrapToIstart
-            _setActiveIstarts([wrapIstart]);
+            // 預先登記 wrapIstart 的下一個音符，確保落地時 _livePos[nextIstart]
+            // 已有座標，onNoteOn 起飛不會 fallback 到 fromX 造成頓挫
+            var _wpo             = abc2svg && abc2svg._current_po;
+            var _wMeta           = _wpo && _wpo._ballMeta && _wpo._ballMeta[wrapIstart];
+            var _wrapNextIstart  = _wMeta ? _wMeta.nextIstart : null;
+            _setActiveIstarts(_wrapNextIstart ? [wrapIstart, _wrapNextIstart] : [wrapIstart]);
             _startFly(leftX, wrapToY, wrapToX, wrapToY, _ball.wrapDur, wrapIstart);
             _ensureRaf();
           } else if (_ball._afterFlyToDone) {
@@ -557,6 +587,9 @@
       _ball.wrapPending    = false;
       _ball.pausedProgress = -1;
       _ball._afterFlyToDone = false;
+
+      // [優化4] 重新播放時清除有效 istart 快取，確保新渲染的 DOM 重新驗證
+      _validIstarts.clear();
 
       // 即時取第一音符座標
       _setActiveIstarts([firstIstart]);
