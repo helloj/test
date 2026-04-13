@@ -20,13 +20,13 @@
  *   - pause 時記錄 pausedProgress，小球停在半空中
  *   - resume 時重算 segStart，從半空中繼續飛行
  *
- * 座標策略（方案 A + scroll 補強）：
+ * 座標策略（方案 A：scroll/resize 持續 snap）：
  *   - _livePos{}：只存「活躍 istart」（最多 2~3 個）的 viewport 座標快照。
  *     _tick 直接讀此表，零 DOM query。
  *   - 更新時機（事件驅動，非每幀）：
- *       1. onNoteOn / leadTimeout 起飛時：呼叫 _refreshLivePos() 立刻重查
- *       2. scroll 事件（passive）：重查活躍 istart，更新 _livePos
- *       3. resize 事件：同上
+ *       1. onNoteOn / leadTimeout 起飛時：呼叫 _refreshLivePos(false) 立刻重查
+ *       2. scroll 事件（passive）：呼叫 _refreshLivePos(true)，snap fromY → toY
+ *       3. resize 事件：同上，呼叫 _refreshLivePos(true)
  *   - _getNotePos()：僅在起飛等低頻時機呼叫，不進入 _tick 主迴圈。
  *
  * 小球生命週期：
@@ -253,21 +253,30 @@
       }
       return false;                                   // 無 DOM，過濾掉
     });
-    _refreshLivePos();
+    _refreshLivePos(false);
   }
 
   /**
-   * _refreshLivePos() - 重查所有活躍 istart 的 viewport 座標
+   * _refreshLivePos(fromScroll) - 重查所有活躍 istart 的 viewport 座標
    *
    * 呼叫時機：
-   *   1. _setActiveIstarts()（起飛時）
-   *   2. scroll 事件（passive listener）
-   *   3. resize 事件
+   *   1. _setActiveIstarts()（起飛時）              → fromScroll = false
+   *   2. scroll 事件（passive listener）             → fromScroll = true
+   *   3. resize 事件                                → fromScroll = true
    *
    * 每次只查 _activeIstarts 中的幾個元素（最多 3 個），開銷極低。
    * 查完後同步更新 _ball.toX / _ball.toY，確保 _tick 讀到最新值。
+   *
+   * [方案 A] scroll / resize 觸發時，持續將飛行起點 Y snap 到目標音符 Y：
+   *   條件：fromScroll = true、flying 中、未暫停
+   *   只修改 fromY 和 arcH，完全不動 fromX / segStart。
+   *   效果：每次 scroll 事件都重新 snap，捲動過程中球的 Y 軸持續追蹤目標；
+   *         X 軸飛行路徑與時序完全不受影響，球照正常速度水平推進。
+   *   原理：fromY = toY、arcH = 0 → _parabola(p, toY, toY, 0) 恆等於 toY。
+   *
+   * @param {boolean} [fromScroll]  true = 由 scroll/resize 事件觸發
    */
-  function _refreshLivePos() {
+  function _refreshLivePos(fromScroll) {
     for (var i = 0; i < _activeIstarts.length; i++) {
       var pos = _getNotePos(_activeIstarts[i]);
       if (pos) _livePos[_activeIstarts[i]] = pos;
@@ -276,6 +285,19 @@
     if (_ball._currentToIstart && _livePos[_ball._currentToIstart]) {
       _ball.toX = _livePos[_ball._currentToIstart].cx;
       _ball.toY = _livePos[_ball._currentToIstart].cy;
+    }
+
+    // ── 共同前置條件：flying 中、未暫停 ─────────────────────────
+    if (_ball.state !== 'flying' || _ball.pausedProgress >= 0) return;
+
+    // [方案 A] scroll / resize 觸發：持續將 fromY snap 到目標音符 Y
+    // 只修改 fromY 和 arcH，完全不動 fromX / segStart，
+    // 確保 X 軸飛行路徑與時序不受影響。
+    // fromY = toY、arcH = BOUNCE_H → _parabola(p, toY, toY, 0) 結果永遠是 toY，
+    // 球在 Y 軸固定於目標音符高度，X 軸照原本進度正常推進。
+    if (fromScroll) {
+      _ball.fromY = _ball.toY;
+      _ball.arcH  = BOUNCE_H;
     }
   }
 
@@ -331,6 +353,8 @@
     _ball.toY              = toY;
     _ball.segStart         = performance.now();
     _ball.segDur           = Math.max(durMs, 50); // 最短 50ms，防止除零
+    // arcH 每次起飛都從傳入值（或 BOUNCE_H）重設，
+    // 避免前一段 _refreshLivePos 壓縮的殘餘值污染新段。
     _ball.arcH             = (arcH !== undefined) ? arcH : BOUNCE_H;
     _ball.pausedProgress   = -1;
     _ball._currentToIstart = toIstart || null;
@@ -558,12 +582,13 @@
         if (!_canvas) return;
         _canvas.width  = window.innerWidth;
         _canvas.height = window.innerHeight;
-        _refreshLivePos();
+        _refreshLivePos(true);
       });
 
       // 捲動時重查活躍音符座標（passive，不阻塞捲動）
       // 只查 _activeIstarts 中的 2~3 個元素，開銷極低
-      window.addEventListener('scroll', _refreshLivePos, { passive: true });
+      // fromScroll = true：觸發方案 C snap，將球 Y 軸對齊目標音符
+      window.addEventListener('scroll', function () { _refreshLivePos(true); }, { passive: true });
     },
 
     // ══════════════════════════════════════════
