@@ -216,11 +216,14 @@
    */
   function _getNotePos(istart) {
     if (!istart) return null;
-    var el = document.querySelector('._' + istart + '_');
-    if (!el) return null;
-    var r = el.getBoundingClientRect();
+    // [多 rect] 同一 istart 可能對應多個 .abcr（如簡譜 + 五線譜雙系統）。
+    // 與 setNoteOp（UIController）保持一致，使用 getElementsByClassName 取第一個元素，
+    // 確保球的 X 座標來源與 playline 定位使用的是同一個 rect。
+    var elts = document.getElementsByClassName('_' + istart + '_');
+    if (!elts || !elts.length) return null;
+    var r = elts[0].getBoundingClientRect();
     return {
-      cx: r.left,               // [playline] 左邊界，與垂直細線對齊
+      cx: r.left + BALL_R * 2,  // [playline] 左邊界右移一個直徑：球左邊緣貼 playline 右側，球心距 playline 一個半徑
       cy: r.top  + r.height / 2
     };
   }
