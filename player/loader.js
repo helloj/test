@@ -23,7 +23,7 @@
  */
 
 /**
- * HTML 中只需：
+ * HTML 中只需（順序不再受限，loader.js 可放任意位置）：
  *   <script src="abc2svg-1.js"></script>
  *   <script src="snd-1.js"></script>
  *   <script src="jump-engine.js"></script>
@@ -32,6 +32,8 @@
  *   <script src="ui-controller.js"></script>
  *   <script src="ball-controller.js"></script>
  *   <script src="loader.js"></script>
+ *
+ * 打包成 min.js 時同樣不受順序限制，直接 concat 即可。
  *
  *   <!-- 每首曲子放在獨立的區塊 -->
  *   <script type="text/vnd.abc">
@@ -84,35 +86,13 @@ var CFG = {
 };
 
 // ══════════════════════════════════════════
-// 1. 注入 CSS（委派給 UIController）
-// ══════════════════════════════════════════
-UIController.injectCSS();
-
-// ══════════════════════════════════════════
-// 2. 建立 DOM 結構（委派給 UIController）
-// ══════════════════════════════════════════
-UIController.buildDOM(CFG);
-
-// ══════════════════════════════════════════
-// 3. 修補 abc2svg.play_next（含 D.S. / D.C. 跳轉支援）
+// 1. 注入 CSS → 移入 _assemble()（見 §13）
 // ══════════════════════════════════════════
 //
-//   play_next 替換由 hook-bridge.js 的 HookBridge.setup() 負責。
-//   跳轉決策委派給 jump-engine.js 的 JumpEngine.walkAnchors()。
+//   所有模組呼叫（含 injectCSS）統一延遲至 DOMContentLoaded，
+//   loader.js 頂層不再直接引用任何模組，打包順序完全自由。
+//   代價：CSS 在 DOMContentLoaded 後才注入，理論上可能有短暫 FOUC。
 //
-HookBridge.setup();
-
-// ══════════════════════════════════════════
-// 4. Driver 初始化
-// ══════════════════════════════════════════
-//
-//   AbcplayDriver 在此取得 UIController 引用與 CFG 常數。
-//   後端（AbcPlay）在 doRender 的 setInterval 確認可用後注入（setBackend）。
-//
-AbcplayDriver.init({
-  uiController: UIController,
-  CFG:          CFG
-});
 
 // ══════════════════════════════════════════
 // 5. 渲染核心（以 abcweb1-1.js 為基礎）
@@ -295,48 +275,92 @@ function dom_loaded() {
 // ══════════════════════════════════════════
 // 13. 啟動（組裝序列）
 // ══════════════════════════════════════════
+//
+//   _assemble() 包含所有需要 DOM 就緒才能執行的初始化步驟：
+//   §2 buildDOM、§3 HookBridge.setup、§4 AbcplayDriver.init，
+//   以及原 §13 的模組組裝與渲染觸發。
+//
+//   injectCSS（§1）已在頂層立即執行，不在此處重複。
+//
+function _assemble() {
 
-// ── [組裝 1] 填入 UI → Player 命令集 ──────────────────────────────
-//
-// UIController 的按鈕 / 點擊事件只呼叫 play.api.*，
-// 不直接引用 AbcplayDriver 或 loader.js 內部的函式名稱。
-//
-var _cmds = AbcplayDriver.getCommands();
-var _playApi = {
-  pause:           _cmds.pause,
-  resume:          _cmds.resume,
-  play:            _cmds.play,
-  stop:            _cmds.stop,
-  seekTo:          _cmds.seekTo,
-  setSpeed:        _cmds.setSpeed,
-  getSe:           _cmds.getSe,
-  getPlaySi:       _cmds.getPlaySi,
-  getMeasureEnd:   _cmds.getMeasureEnd,
-  getEeByTime:     _cmds.getEeByTime,
-  getSyms:         _cmds.getSymbol,    // UIController 仍用 getSyms 名稱，此處橋接
-  setCurrentPoEnd: _cmds.setCurrentPoEnd,
-  setPlayEi:       _cmds.setPlayEi
-};
+  // ── §1 注入 CSS（委派給 UIController）────────────────────────────
+  //
+  //   與 §2 buildDOM 同屬 DOM 操作，統一在 DOMContentLoaded 後執行。
+  //   loader.js 頂層因此不再有任何模組呼叫，打包順序完全自由。
+  //
+  UIController.injectCSS();
 
-// ── [組裝 2] 初始化 UIController ──────────────────────────────────
-//
-// UIController 透過存取器函式讀寫 AbcplayDriver 的私有狀態，
-// 不直接引用變數名稱，維持模組邊界。
-//
-var _ctx = AbcplayDriver.getContext(CFG);
-UIController.init(Object.assign({ api: _playApi }, _ctx));
+  // ── §2 建立 DOM 結構（委派給 UIController）────────────────────────
+  UIController.buildDOM(CFG);
 
-// ── [組裝 3] 注入 Player → UI callbacks ───────────────────────────
-//
-// Driver 內部的 play.on* 由 setUICallbacks 填入，
-// loader.js 不需要知道 play 物件的結構。
-//
-AbcplayDriver.setUICallbacks(UIController.getCallbacks());
+  // ── §3 修補 abc2svg.play_next（含 D.S. / D.C. 跳轉支援）──────────
+  //
+  //   play_next 替換由 hook-bridge.js 的 HookBridge.setup() 負責。
+  //   跳轉決策委派給 jump-engine.js 的 JumpEngine.walkAnchors()。
+  //
+  HookBridge.setup();
 
-// ── [啟動] 渲染 ───────────────────────────────────────────────────
-if (document.readyState === 'loading')
-  document.addEventListener('DOMContentLoaded', dom_loaded, { once: true });
-else
+  // ── §4 Driver 初始化 ───────────────────────────────────────────────
+  //
+  //   AbcplayDriver 在此取得 UIController 引用與 CFG 常數。
+  //   後端（AbcPlay）在 doRender 的 setInterval 確認可用後注入（setBackend）。
+  //
+  AbcplayDriver.init({
+    uiController: UIController,
+    CFG:          CFG
+  });
+
+  // ── [組裝 1] 填入 UI → Player 命令集 ──────────────────────────────
+  //
+  // UIController 的按鈕 / 點擊事件只呼叫 play.api.*，
+  // 不直接引用 AbcplayDriver 或 loader.js 內部的函式名稱。
+  //
+  var _cmds = AbcplayDriver.getCommands();
+  var _playApi = {
+    pause:           _cmds.pause,
+    resume:          _cmds.resume,
+    play:            _cmds.play,
+    stop:            _cmds.stop,
+    seekTo:          _cmds.seekTo,
+    setSpeed:        _cmds.setSpeed,
+    getSe:           _cmds.getSe,
+    getPlaySi:       _cmds.getPlaySi,
+    getMeasureEnd:   _cmds.getMeasureEnd,
+    getEeByTime:     _cmds.getEeByTime,
+    getSyms:         _cmds.getSymbol,    // UIController 仍用 getSyms 名稱，此處橋接
+    setCurrentPoEnd: _cmds.setCurrentPoEnd,
+    setPlayEi:       _cmds.setPlayEi
+  };
+
+  // ── [組裝 2] 初始化 UIController ──────────────────────────────────
+  //
+  // UIController 透過存取器函式讀寫 AbcplayDriver 的私有狀態，
+  // 不直接引用變數名稱，維持模組邊界。
+  //
+  var _ctx = AbcplayDriver.getContext(CFG);
+  UIController.init(Object.assign({ api: _playApi }, _ctx));
+
+  // ── [組裝 3] 注入 Player → UI callbacks ───────────────────────────
+  //
+  // Driver 內部的 play.on* 由 setUICallbacks 填入，
+  // loader.js 不需要知道 play 物件的結構。
+  //
+  AbcplayDriver.setUICallbacks(UIController.getCallbacks());
+
+  // ── [啟動] 渲染 ───────────────────────────────────────────────────
   dom_loaded();
+}
+
+// ── 統一入口：等 DOM 就緒後執行 _assemble ────────────────────────────
+//
+//   injectCSS（§1）已在頂層立即完成；
+//   _assemble 含 DOM 操作，必須等 <body> 存在才能安全執行。
+//   readyState 判斷確保無論 loader.js 放在 <head> 或 <body> 末尾都正確。
+//
+if (document.readyState === 'loading')
+  document.addEventListener('DOMContentLoaded', _assemble, { once: true });
+else
+  _assemble();
 
 }());
