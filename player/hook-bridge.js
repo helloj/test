@@ -23,15 +23,28 @@
  *     [GEN]             play_cont 開頭：_playGeneration 世代守衛，
  *                       過濾 stop 後殘存的舊世代 setTimeout(play_cont,...)
  *     [B1]              play_cont 推進迴圈前：起點落在 anchor 時走過
- *                       + DC/DS 跳轉後重置 po.repn=false / po.repv=1（慣例 A）
+ *                       + DC/DS 跳轉後重置 po.repn=false（慣例 A）
+ *                       + segno/tuneStart 降落時不重置 po.repv，保留已進房計數
  *     [B2]              play_cont 內層 while：中途遇到 anchor 時跳轉
- *                       + DC/DS 跳轉後重置 po.repn=false / po.repv=1（慣例 A）
+ *                       + DC/DS 跳轉後重置 po.repn=false（慣例 A）
+ *                       + segno/tuneStart 降落時不重置 po.repv，保留已進房計數
+ *     [repv-on-enter]   case C.BAR rep_s 段：進入 volta 房時才遞增 po.repv
+ *                       （原版在 rep_p 彈回時遞增；新語義改為進入時遞增，
+ *                        DS/DC 跳回後 po.repv 保留，自然指向下一未播房）
  *     [pause:reset-timouts]  po.timouts=[] 之後，重置 po._onnoteTimouts
  *     [pause:track-onnote]   onnote on/off setTimeout 改存入 po._onnoteTimouts
  *     [pause:save-refs]      play_cont 排程前記錄 po._nextT；結尾存 po._play_cont
  *     [ball:meta]            填入 po._ballMeta[i] = { durMs, nextIstart }
  *                            nextIstart 查找邏輯內聯在 [ball:meta] 區塊內
  *                            第一個音符時直接呼叫 BallController.onPlayStart（需要 st）
+ *
+ * po.repv 語義（新）：
+ *   - 初始值 1
+ *   - 進入第 N 房時：先查 rep_s[po.repv]，成功後 po.repv++
+ *   - rep_p（:|）彈回時：不再遞增（由進房時遞增取代）
+ *   - DC/DS 跳回後：po.repv 保留，自然指向下一未播房（例如已進過 1,2 房
+ *     則 repv=3，再遇到 volta 分歧直接走 rep_s[3]=3房）
+ *   - var_end / |: 開啟新段：po.repv=1（重置，開始新 repeat block）
  *
  * 載入順序（HTML）：
  *   <script src="abc2svg-1.js"></script>
@@ -220,10 +233,11 @@
             if(!_w1.target){if(po.onend)po.onend(po.repv);return}
             po.stim+=_w1.stimDelta
             s=_w1.target
-            // 慣例 A：DC/DS 跳回曲首或 segno 時，重置 repeat 狀態，
-            // 讓 repeat 從頭計數（volta bracket 從 1 房重走）。
+            // 慣例 A：DC/DS 跳回曲首或 segno 時，重置 po.repn=false。
+            // po.repv 不重置：保留已進房計數，下次 volta 分歧自然走下一未播房。
+            // （原版此處有 po.repv=1，新語義移除）
             // coda/fine 跳轉方向為前進，不重置。
-            if(s._tuneStartAnchor||s._segnoAnchor){po.repn=false;po.repv=1}
+            if(s._tuneStartAnchor||s._segnoAnchor){po.repn=false}
             if(s==po.s_end){if(po.onend)po.onend(po.repv);return}
             po.s_cur=s}
           // ── [B1] end ───────────────────────────────────────────
@@ -243,7 +257,9 @@
           // ── [pause:reset-timouts] end ────────────────────────────
 
           while(1){switch(s.type){case C.BAR:s2=null
-            if(s.rep_p){po.repv++
+            if(s.rep_p){
+              // rep_p（:|）彈回：不再遞增 po.repv。
+              // 新語義：repv 由 rep_s 分歧點進入房時遞增，rep_p 只負責彈回判斷。
               if(!po.repn&&(!s.rep_v||po.repv<=s.rep_v.length)){s2=s.rep_p
                 po.repn=true}else{if(s.rep_v)
                 s2=var_end(s)
@@ -251,12 +267,19 @@
                 if(s.bar_type.slice(-1)==':')
                   po.repv=1
                 }}
-            if(s.rep_s){s2=s.rep_s[po.repv]
+            if(s.rep_s){
+              // ── [repv-on-enter] volta 分歧：進入房時遞增 po.repv ──
+              // rep_s[po.repv] 存在 → 進入該房，立刻 po.repv++ 記錄已進過。
+              // DS/DC 跳回後 po.repv 已是下一未播房號，直接進入正確房，無需額外機制。
+              // rep_s[po.repv] 不存在 → var_end 跳過所有 volta，走向段落結尾。
+              s2=s.rep_s[po.repv]
               if(s2){po.repn=false
+                po.repv++  // ← 進入房後立刻遞增
                 if(s2==s)
                   s2=null}else{s2=var_end(s)
                 if(s2==po.s_end)
                   break}}
+              // ── [repv-on-enter] end ───────────────────────────────
             if(s.bar_type.slice(-1)==':'&&s.bar_type[0]!=':')
               po.repv=1
             if(s2){po.stim+=(s.ptim-s2.ptim)/po.conf.speed
@@ -311,7 +334,8 @@
                 // ── [pause:track-onnote] end ──────────────────────────
 
                 // ── [ball:meta] ───────────────────────────────────────
-                // 填入 _ballMeta，供 BallController.onNoteOn 取用（由 abcplay-driver 呼叫）。
+                // 填入 _ballMeta，供 BallController.onNoteOn 與
+                // UIController.setNoteOp 取用。
                 // 第一個音符在此直接呼叫 onPlayStart：
                 //   st = (t-now)*1000 是「on=true 距現在的 ms」，僅在排程階段有意義，
                 //   必須在 play_cont 內取用，無法延遲到 notehlight 觸發時。
@@ -348,10 +372,11 @@
               if(!_w2.target){if(po.onend)setTimeout(po.onend,(t-now+d)*1000,po.repv);po.s_cur=s;return}
               po.stim+=_w2.stimDelta
               s=_w2.target
-              // 慣例 A：DC/DS 跳回曲首或 segno 時，重置 repeat 狀態，
-              // 讓 repeat 從頭計數（volta bracket 從 1 房重走）。
+              // 慣例 A：DC/DS 跳回曲首或 segno 時，重置 po.repn=false。
+              // po.repv 不重置：保留已進房計數，下次 volta 分歧自然走下一未播房。
+              // （原版此處有 po.repv=1，新語義移除）
               // coda/fine 跳轉方向為前進，不重置。
-              if(s._tuneStartAnchor||s._segnoAnchor){po.repn=false;po.repv=1}
+              if(s._tuneStartAnchor||s._segnoAnchor){po.repn=false}
               t=po.stim+s.ptim/po.conf.speed
               break}  // 跳出內層 while，讓外層重新從落點開始處理
             // ── [B2] end ─────────────────────────────────────────────
