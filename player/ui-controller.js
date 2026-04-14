@@ -307,11 +307,12 @@
      * onRightClick(evt)
      *
      * 右鍵點擊處理：設 B 點（選段終點）。
-     * 播放中即時調整終點：以目前 A 點（selx[0]）和新 B 點重算 ei。
+     * PLAYING / PAUSED 皆即時同步 po.s_end 與 play.ei，確保
+     * resume 後能接續正確的 B 點，而非 pause 前的舊 B 點。
      *
      * Toggle 行為：右鍵再點同一 B 點音符 → 清除 B 點（播到曲尾）。
      *   - selx[1] 歸零，高亮清除
-     *   - 播放中：po.s_end = null（自然結尾）、play.ei = null
+     *   - PLAYING / PAUSED：po.s_end = null（自然結尾）、play.ei = null
      *   - 循環計數歸零，UI 重新顯示
      *
      * @param {MouseEvent} evt
@@ -322,13 +323,17 @@
       if (!v) return;
 
       var PlayState = _cfg.PlayState;
+      var state = _cfg.getState();
       var selx = _cfg.getSelx();
+      // 判斷是否需要同步 po.s_end（PLAYING 或 PAUSED 狀態皆需要）
+      var isActive = (state === PlayState.PLAYING || state === PlayState.PAUSED);
 
       // ── Toggle：右鍵再點同一 B 點 → 清除 B 點 ──────────────────────
       if (v === selx[1]) {
         UIController.setsel(1, 0);
-        if (_cfg.getState() === PlayState.PLAYING) {
+        if (isActive) {
           // po.s_end = null → 播到曲尾；play.ei = null 同步
+          // PAUSED 時 po.s_end 同步確保 resume 後不再受舊 B 點限制
           _cfg.api.setCurrentPoEnd(null);
           _cfg.api.setPlayEi(null);
           // 循環計數歸零，UI 從第一圈重新顯示
@@ -339,9 +344,10 @@
 
       // ── 右鍵點新音符：設 B 點 ──────────────────────────────────────
       UIController.setsel(1, v);
-      if (_cfg.getState() === PlayState.PLAYING) {
-        // 播放中即時調整終點：以目前 A 點（selx[0]）和新 B 點重算 ei
+      if (isActive) {
+        // 即時調整終點：以目前 A 點（selx[0]）和新 B 點重算 ei
         // 與 play_tune 的 A/B 對調保護對齊：b < a 時 swap 後重算
+        // PAUSED 時同步 po.s_end，確保 resume 後接續正確的新 B 點
         var a = selx[0], b = v, si;
         if (a) {
           if (b < a) { var t = a; a = b; b = t; }
