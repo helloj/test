@@ -180,7 +180,9 @@
         ".speed-preset.active{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600}",
         "#speed-btn{display:flex;align-items:center;justify-content:center;width:2.4em;height:2.4em;border:1px solid var(--muted);border-radius:4px;background:transparent;color:var(--muted);font-size:1.1rem;cursor:pointer;transition:background .12s,color .12s;line-height:1;padding:0;font-family:inherit}",
         "#speed-btn:hover{background:rgba(139,58,58,0.10);color:var(--ink)}",
-        "#speed-btn.active{background:rgba(139,58,58,0.15);color:var(--ink)}"
+        "#speed-btn.active{background:rgba(139,58,58,0.15);color:var(--ink)}",
+        "@font-face{font-family:'NumberFont';src:local('Impact'),local('Arial Black'),local('Verdana');unicode-range:U+30-39}",
+        "svg[class*=\"tune\"] text{font-family:'NumberFont','sans-serif-black',music}"
       ].join('\n');
       document.head.appendChild(style);
 
