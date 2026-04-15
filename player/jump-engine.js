@@ -293,15 +293,23 @@
     var jumpAnchors  = [];
 
     // 依照 a_dd 書寫順序插入 anchor（同一 sym 上多個 deco 保持原始順序）
-    // _findMainChainRef：從 first 往 ts_next 找第一個 ptim === targetPtim 的節點，
-    // 確保插入參考點一定在主鏈上，不依賴 ts_prev 回溯。
+    // _findMainChainRef：從 first 往 ts_next 找 ptim === targetPtim 的節點。
+    // 優先回傳非 BAR 節點（音符/休止符），BAR 留作 fallback。
+    // 原因：BAR symbol 作為插入參考點時，_insertAnchor('before') 的回溯
+    // 會在停止條件5（遇到 bar_type）立刻停住，導致 anchor 插在 BAR 之後，
+    // 若該 BAR 是 :|N volta 結束 bar，播放時被 volta 機制跳過，anchor 踩不到。
+    // 典型案例：:|2 !segno!（segno 與 :|2 同 ptim）→ 應插在2房後第一音符之前。
     function _findMainChainRef(targetPtim) {
       var s = first;
+      var fallback = null;
       while (s) {
-        if (s.ptim === targetPtim && !s._anchor) return s;
+        if (s.ptim === targetPtim && !s._anchor) {
+          if (s.type !== abc2svg.C.BAR) return s; // 優先非 BAR
+          if (!fallback) fallback = s;             // BAR 留作備用
+        }
         s = s.ts_next;
       }
-      return null;
+      return fallback;
     }
 
     decoList.forEach(function(s) {
