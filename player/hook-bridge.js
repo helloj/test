@@ -218,9 +218,21 @@
                 s3=s2}}
             for(s=s3;s!=po.s_end;s=s.ts_next){if(s.time==ti)
               continue
-              if(s.rbstop==2)
-                break}
+              // ── [fix:double-repeat] ──────────────────────────────
+              // :: 被拆成 :|] + |: 兩個 BAR symbol。
+              // :|] 帶有 rep_p（repeat end），rbstop 可能是 1 或 2。
+              // 原版只檢查 rbstop==2，在此之前直接 return s，落點停在 :|] 本身；
+              // 後續 while(!s.dur) 把緊接的 |: 跳過，
+              // 造成 :: 之後的新 repeat block 整個被忽略。
+              // 修正一：優先檢查 rep_p，落點改為 ts_next（即 |:），
+              //         讓播放器正常踩到新 repeat block 的開頭。
+              // 修正二：po.repn 重置為 false，防止帶著舊的 repn=true 進入新段，
+              //         導致新段的 :| 判斷 !po.repn 不成立而跳過彈回。
+              if(s.rep_p&&s.ts_next){s=s.ts_next;break}
+              // ── [fix:double-repeat] end ──────────────────────────
+              if(s.rbstop==2)break}
             po.repv=1
+            po.repn=false
             return s}
           while(s.noplay){s=s.ts_next
             if(!s||s==po.s_end){if(po.onend)
