@@ -151,6 +151,9 @@
         ".abcr{fill:#8b3a3a;fill-opacity:0;z-index:15}",
         ".abcr.sel{fill:#3cc878}",
         ".abcr.selb{fill:#e07b00}",
+        /* [ball-pre] 換行預點亮：小球掉落期間提前點亮目標音符，橘色同 selb      */
+        /* 由 ball-controller.js _preHighlightNote 加上，onNoteOn 落地後移除    */
+        ".abcr.abcr-pre{fill:#e07b00;fill-opacity:0.4}",
         /* [playline] 播放中音符高亮：fixed overlay，不影響 SVG layout           */
         /* left:0;top:0 固定在原點，實際位置完全由 transform:translate 控制        */
         /* will-change:transform 提示瀏覽器提升到獨立 GPU layer，定位零 Layout     */
@@ -447,6 +450,29 @@
     // ══════════════════════════════════════════
     // 10. 播放中音符高亮
     // ══════════════════════════════════════════
+
+    /**
+     * scrollToNote(i)
+     *
+     * 觸發捲動：若 istart 對應的音符在視窗邊緣外，執行 smooth scroll。
+     * 與 setNoteOp(on=true) 的捲動邏輯相同，但不操作 playline overlay。
+     * 供 ball-controller.js 的 _preHighlightNote 呼叫，
+     * 確保換行第二段（掉落）開始前畫面已捲到目標行。
+     *
+     * @param {number} i - symbol istart
+     */
+    scrollToNote: function (i) {
+      var elts = document.getElementsByClassName('_' + i + '_');
+      if (!elts || !elts.length) return;
+      var r = elts[0].getBoundingClientRect();
+      var triggerLow  = r.bottom > window.innerHeight * 4 / 5;
+      var triggerHigh = r.top < 20;
+      if ((triggerLow || triggerHigh) && !_scrollPending) {
+        _scrollPending = true;
+        window.scrollBy({ top: r.top - window.innerHeight / 3, behavior: 'smooth' });
+        setTimeout(function () { _scrollPending = false; }, 500);
+      }
+    },
 
     /**
      * setNoteOp(i, on)

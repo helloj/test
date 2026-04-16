@@ -364,7 +364,7 @@
    *
    * 三項職責（均需讀取 Driver 私有狀態，不適合放在 UIController）：
    *   1. pause-guard：paused 中 on 回呼已在 task queue 排隊清不掉，在此攔截
-   *   2. B-overshoot：音符 istart 超過 B 點時立即停播重播
+   *   2. B-overshoot：音符 istart 超過選段終點時立即停播重播
    *   3. curNotes 維護：多聲部計數
    *
    * DOM 操作委派給 UIController（play.onNoteHighlight 由 setUICallbacks 填入）。
@@ -375,11 +375,15 @@
     if (isState(PlayState.PAUSED) && on) return;
 
     // ── [B-overshoot] B 點越界偵測 ────────────────────────────────
-    // onnote on 觸發時，若當前音符 istart 已超過 B 點（selx[1]），
+    // onnote on 觸發時，若當前音符 istart 已超過選段終點，
     // 表示 po.s_end 設置時音符已送進 WebAudio Buffer，無法撤回。
     // 立即停播並從原 A/B 點重新起播，selx 狀態不變，
     // play_tune() 自動感知 A/B 重算 si/ei。
-    if (on && selx[1] && i > selx[1] && isState(PlayState.PLAYING)) {
+    //
+    // 閾值使用 play.ei.istart（後端實際終點）而非 selx[1]（用戶點擊的原始位置）。
+    // 原因：B < A 時 selx[1] < 現在播放點，overshoot 在每個音符都誤觸發。
+    //       play.ei 是 play_tune() 經 A/B swap 計算後的正確終點，不受點擊順序影響。
+    if (on && play.ei && play.ei.istart && i > play.ei.istart && isState(PlayState.PLAYING)) {
       stopPlay();
       play_tune();
       return;
@@ -402,9 +406,10 @@
     // on=true 時通知 BallController 落地並起飛向 next 音符。
     // onPlayStart（drop_wait 排程）已在 hook-bridge play_cont 排程階段呼叫，
     // 此處只需觸發落地動作。
-    // isAtB：當前音符正好是 B 點（選段終點），球應原地跳躍，不飛向 next。
+    // isAtB：當前音符正好是選段終點（play.ei），球應原地跳躍，不飛向 next。
+    // 同樣改用 play.ei.istart，與 overshoot 閾值保持一致。
     if (on && root.BallController) {
-      var isAtB = !!(selx[1] && i === selx[1]);
+      var isAtB = !!(play.ei && play.ei.istart && i === play.ei.istart);
       root.BallController.onNoteOn(i, isAtB);
     }
     // ── [ball:on-note] end ────────────────────────────────────────
