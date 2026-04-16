@@ -200,15 +200,23 @@
 
   /**
    * _setActiveIstarts(istarts) - 登記活躍 istart，重查座標
-   * 快取優化：已知有 DOM 的 istart 直接查詢；新 istart 才查 querySelector。
+   *
+   * _validIstarts 只用來記錄「此 istart 確實有對應 DOM」，
+   * 避免對不存在的 istart 重複呼叫 getElementsByClassName。
+   *
+   * 已知有 DOM 的 istart 每次都強制重查 getBoundingClientRect，
+   * 確保 scroll 後座標立即反映最新 viewport 位置。
+   * （舊版對已知 istart 只在 _livePos 為空時才查，導致 scroll 後
+   *   fromPos 仍讀到舊行座標，球飛到錯誤行且一直維持偏移。）
    */
   function _setActiveIstarts(istarts) {
     _activeIstarts = istarts;
     for (var i = 0; i < istarts.length; i++) {
       var istart = istarts[i];
       if (_validIstarts.has(istart)) {
-        var pos = _livePos[istart];
-        if (!pos) _livePos[istart] = _getNotePos(istart);
+        // 已知有 DOM：每次強制重查，取得最新 viewport 座標
+        var pos = _getNotePos(istart);
+        if (pos) _livePos[istart] = pos;
       } else {
         var pos2 = _getNotePos(istart);
         if (pos2) {
@@ -237,8 +245,11 @@
     // ── 共同前置條件：flying 中、未暫停 ─────────────────────────
     if (_ball.state !== 'flying' || _ball.pausedProgress >= 0) return;
 
-    // scroll/resize 觸發：fromY snap 到 toY，球 Y 軸固定於目標
+    // scroll/resize 觸發：fromX/fromY 同時 snap 到 toX/toY。
+    // scroll 更新 toX/toY 後，fromX/fromY 若殘留舊 viewport 座標，
+    // 後續插值會在不同座標系混算造成球位置偏移。
     if (fromScroll) {
+      _ball.fromX = _ball.toX;
       _ball.fromY = _ball.toY;
       _ball.arcH  = BOUNCE_H;
     }
