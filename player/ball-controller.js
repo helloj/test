@@ -16,45 +16,34 @@
  *   在播放期間，用一顆跳動的小球標示目前演奏位置，模擬卡拉 OK 效果。
  *
  * 動畫引擎：requestAnimationFrame 狀態機
- *   - 每幀根據 (now - segStart) / segDur 計算進度，套拋物線公式
+ *   - 每幀計算進度，套拋物線公式
  *   - pause 時記錄 pausedProgress，小球停在半空中
  *   - resume 時重算 segStart，從半空中繼續飛行
  *
  * 座標策略（方案 A：scroll/resize 持續 snap）：
- *   - _livePos{}：只存「活躍 istart」（最多 2~3 個）的 viewport 座標快照。
- *     _tick 直接讀此表，零 DOM query。
- *   - 更新時機（事件驅動，非每幀）：
- *       1. onNoteOn / leadTimeout 起飛時：呼叫 _refreshLivePos(false) 立刻重查
- *       2. scroll 事件（passive）：呼叫 _refreshLivePos(true)，snap fromY → toY
- *       3. resize 事件：同上，呼叫 _refreshLivePos(true)
- *   - _getNotePos()：僅在起飛等低頻時機呼叫，不進入 _tick 主迴圈。
+ *   - _livePos{}：只存「活躍 istart」（最多 2~3 個）的 viewport 座標快照
+ *   - _tick 直接讀此表，零 DOM query
+ *   - scroll/resize 事件驅動更新，非每幀查詢
  *
  * 小球生命週期：
  *   ┌──────────────────────────────────────────────────────────────┐
- *   │ IDLE_BOUNCING  曲首在左邊界持續跳動（等待第一個 on=true）      │
- *   │   ↓ 提前 LEAD_MS (80ms) 起飛                                  │
- *   │ FLYING         飛向目標音符                                    │
- *   │   ↓ on=true 落地，立刻以 dur 為時長起飛飛向 next              │
- *   │ FLYING         飛向 next 音符（同行 / 換行 / 曲尾）            │
- *   │   ↓ 換行：先飛到右邊界（WRAP_TO_EDGE_RATIO），再從左邊界飛到 next（WRAP_TO_NOTE_RATIO）│
- *   │   ↓ 選段 B 點：原地跳躍（fromX→fromX），不理 next，不換行     │
- *   │ DONE           停在右邊界（曲尾後淡出）                        │
+ *   │ drop_wait      曲首球靜止在第一音符正上方，等待 leadTimeout    │
+ *   │   ↓ 提前 LEAD_MS 開始直線掉落                                 │
+ *   │ flying         飛向目標音符                                    │
+ *   │   ↓ on=true 落地，立刻以 dur 為時長起飛                       │
+ *   │ flying         飛向 next（同行 / 換行 / 跳躍 / 曲尾）         │
+ *   │   ↓ 換行 / isJump：原地上升（stopAt=0.5）→ wrapPending=true   │
+ *   │       → 完成 → _preHighlightNote + 目標正上方掉落             │
+ *   │   ↓ isAtB：完整拋物線原地跳（stopAt=1.0）→ idle_at_note       │
+ *   │   ↓ 曲尾：飛向右邊界 → done（淡出）                          │
  *   └──────────────────────────────────────────────────────────────┘
  *
  * 與現有模組的接點：
- *   - hook-bridge.js：play_cont 的 [pause:track-onnote] 區段需額外填入
- *                     po._ballMeta[istart] = { durMs, nextIstart }
+ *   - hook-bridge.js：po._ballMeta[istart] = { durMs, nextIstart }
  *   - abcplay-driver.js：playStart / pausePlay / resumePlay / onPlaybackEnd
- *                        各呼叫 BallController 對應的生命週期函式
  *   - loader.js：doRender 完成後呼叫 BallController.init()
- *                （buildPositions 已移除，不再需要預先掃描）
  *
- * HTML 載入順序（在 loader.js 之前）：
- *   <script src="ball-controller.js"></script>
- *
- * 依賴（全域）：
- *   abc2svg._current_po  – 取得 _ballMeta
- *   （不依賴 AbcplayDriver / UIController 的私有狀態）
+ * 依賴（全域）：abc2svg._current_po（取得 _ballMeta）
  */
 
 ;(function (root) {
@@ -66,52 +55,39 @@
 
   var BALL_R      = 6;      // 小球半徑（px）
   var LEAD_MS     = 100;    // 第一個音符掉落動畫時長（ms）
-  var BOUNCE_H    = 27;     // 跳躍弧高（px，拋物線頂點相對於端點的高度）
+  var BOUNCE_H    = 28;     // 跳躍弧高（px，拋物線頂點相對於端點的高度）
   var FADE_MS     = 600;    // 曲尾淡出時間（ms）
   var ROW_THRESH  = 20;     // 換行判斷閾值（px，兩音符 DOM Y 差距超過此值視為換行）
   var BALL_COLOR  = 'rgba(220, 60, 60, 0.85)';  // 小球顏色
   var BALL_Z      = '1000'; // z-index
 
-  // ── 換行時長分配比例 ─────────────────────────────────────────────
-  // 第一段（當前音符 → 右邊界）佔 dur 的比例
-  // 第二段（左邊界 → next 音符）佔 1 - WRAP_TO_EDGE_RATIO
-  var WRAP_TO_EDGE_RATIO = 3 / 4;  // 第一段：3/4
-  var WRAP_TO_NOTE_RATIO = 1 / 4;  // 第二段：1/4（= 1 - WRAP_TO_EDGE_RATIO）
+  // 換行 / 跳躍時長分配比例
+  var WRAP_UP_RATIO   = 1 / 4;    // 第一段：（快速跳起）
+  var WRAP_DOWN_RATIO = 3 / 4;    // 第二段：（從容掉落）
+  var WRAP_BOUNCE_H   = BOUNCE_H; // 換行起跳弧高（px），比一般 BOUNCE_H 高，視覺更顯眼
 
   // ══════════════════════════════════════════
   // 模組私有狀態
   // ══════════════════════════════════════════
 
-  /** @type {HTMLCanvasElement|null} 小球畫布（fixed 定位，全螢幕） */
   var _canvas = null;
-  /** @type {CanvasRenderingContext2D|null} */
   var _ctx    = null;
-  /** @type {number|null} requestAnimationFrame ID */
   var _rafId  = null;
 
   /**
    * 活躍音符座標快照：istart → { cx, cy }
-   *
-   * 只存當前飛行相關的 2~3 個 istart（from / to / wrapTo）。
-   * _tick 讀此表，零 DOM query。
-   * 由 _refreshLivePos() 在起飛或捲動時更新。
+   * 只存當前飛行相關的 2~3 個 istart。_tick 讀此表，零 DOM query。
    */
   var _livePos = {};
 
   /**
    * 當前需要追蹤的 istart 列表（最多 3 個）。
-   * scroll / resize 時只重查這幾個元素。
    */
   var _activeIstarts = [];
 
   /**
-   * [優化4] 有效 istart 快取：Set<istart>
-   *
-   * 記錄已確認有對應 .abcr DOM 元素的 istart。
-   * 用途：_setActiveIstarts 過濾無效 istart（多聲部靜音聲部）時，
-   * 第一次查 querySelector，之後直接查快取，避免每次 onNoteOn 都查 DOM。
-   *
-   * 清除時機：doRender 重新渲染時（由 BallController.init 或外部重置呼叫 _clearValidCache）。
+   * 有效 istart 快取：Set<istart>
+   * 第一次查 querySelector，之後直接查快取。
    */
   var _validIstarts = new Set();  // Set<istart>，已知有 DOM 的 istart
 
@@ -140,10 +116,13 @@
     // ── 飛行目標 istart（供 scroll 更新活躍列表 / _livePos 用）──
     _currentToIstart: null,  // 當前飛行終點的 istart；null = 邊界點
 
-    // ── 換行緩衝（line_wrap）───────────────────────────────────
-    wrapPending:  false, // 是否有待執行的換行第二段
-    wrapToIstart: null,  // 換行第二段的目標 istart
-    wrapDur:      0,     // 換行第二段的持續時長（ms）
+    // ── 換行 / 跳躍緩衝 ────────────────────────────────────────
+    // 換行（isWrap）與跳躍（isJump）的第二段（掉落）共用此緩衝。
+    // isJump 的 wrapToIstart 由 hook-bridge [ball:jump-patch] 在
+    // play_cont 同批次修補為實際跳轉後的第一個音符，與換行路徑完全對稱。
+    wrapPending:  false, // 是否有待執行的第二段掉落
+    wrapToIstart: null,  // 第二段的目標 istart
+    wrapDur:      0,     // 第二段的持續時長（ms）
 
     // ── 第一音符掉落與 drop_wait ─────────────────────────────────
     _firstIstart: null,  // 第一個音符的 istart（drop_wait / onResume 用）
@@ -152,6 +131,10 @@
     // 掉落起點 Y = 第一音符 Y - BOUNCE_H（音符正上方弧高處）
     // 掉落期間 state = 'flying'，arcH = 0（直線掉落）
     dropFromY:    0,     // 掉落起點 Y，供 pause 時 idle_at_drop 重繪用
+
+    // ── 飛行段提前完成（stopAt）────────────────────────────────
+    // 預設 1.0（跑完整段）；換行第一段設 0.5（只跑拋物線上升半段）
+    stopAt:     1.0,
 
     // ── pause 快照 ────────────────────────────────────────────
     pausedProgress: -1, // -1 = 未暫停；0~1 = 暫停時的進度
@@ -195,24 +178,11 @@
   function _svgRightEdge() {
     var svgs = document.querySelectorAll('.abc-slot svg, #target svg');
     if (!svgs.length) return window.innerWidth - BALL_R;
-    var last = svgs[svgs.length - 1];
-    return last.getBoundingClientRect().right;
+    return svgs[svgs.length - 1].getBoundingClientRect().right;
   }
 
   /**
    * _getNotePos(istart) - 即時查詢音符的 viewport 座標
-   *
-   * 每次呼叫都執行 querySelector + getBoundingClientRect()，
-   * 確保捲動、縮放後座標永遠正確。
-   *
-   * 對應 .abcr 元素的 class 形如 "abcr _12345_"。
-   * 同一個 istart 可能有多個 rect（多聲部），取第一個。
-   *
-   * @param  {number} istart
-   * @returns {{ cx: number, cy: number }|null}
-   *   cx = 音符矩形左邊界 X（viewport）—— 對齊 [playline] 垂直細線位置
-   *   cy = 音符矩形垂直中心 Y（viewport）
-   *   null = 找不到對應元素
    */
   function _getNotePos(istart) {
     if (!istart) return null;
@@ -223,58 +193,35 @@
     if (!elts || !elts.length) return null;
     var r = elts[0].getBoundingClientRect();
     return {
-      cx: r.left + BALL_R * 2,  // [playline] 左邊界右移一個直徑：球左邊緣貼 playline 右側，球心距 playline 一個半徑
+      cx: r.left + BALL_R * 2,
       cy: r.top  + r.height / 2
     };
   }
 
   /**
-   * _setActiveIstarts(list) - 設定活躍 istart 列表並立刻重查座標
-   *
-   * 在起飛（onNoteOn / leadTimeout）時呼叫，設定當前需追蹤的 istart 集合。
-   * 同時呼叫 _refreshLivePos() 立刻填入最新座標。
-   *
-   * [多聲部過濾] 多聲部情況下（如 V:2 純 MIDI 伴奏），部分 istart 沒有對應的
-   * .abcr DOM 元素（例如 %%MIDI control 7 0 的靜音聲部）。這類 istart 保留在
-   * _activeIstarts 會導致 scroll 時查不到座標，並覆蓋有效聲部的 _livePos。
-   *
-   * [優化4] 使用 _validIstarts 快取：第一次遇到的 istart 才查 querySelector，
-   * 之後直接查 Set，避免每次 onNoteOn 都查 DOM。
-   *
-   * @param {Array} list  istart 陣列，falsy 值與無 DOM 元素的值自動過濾
+   * _setActiveIstarts(istarts) - 登記活躍 istart，重查座標
+   * 快取優化：已知有 DOM 的 istart 直接查詢；新 istart 才查 querySelector。
    */
-  function _setActiveIstarts(list) {
-    _activeIstarts = list.filter(function (v) {
-      if (!v) return false;
-      if (_validIstarts.has(v)) return true;          // 快取命中，直接通過
-      if (document.querySelector('._' + v + '_')) {   // 首次：查 DOM
-        _validIstarts.add(v);                         // 加入快取
-        return true;
+  function _setActiveIstarts(istarts) {
+    _activeIstarts = istarts;
+    for (var i = 0; i < istarts.length; i++) {
+      var istart = istarts[i];
+      if (_validIstarts.has(istart)) {
+        var pos = _livePos[istart];
+        if (!pos) _livePos[istart] = _getNotePos(istart);
+      } else {
+        var pos2 = _getNotePos(istart);
+        if (pos2) {
+          _validIstarts.add(istart);
+          _livePos[istart] = pos2;
+        }
       }
-      return false;                                   // 無 DOM，過濾掉
-    });
-    _refreshLivePos(false);
+    }
   }
 
   /**
-   * _refreshLivePos(fromScroll) - 重查所有活躍 istart 的 viewport 座標
-   *
-   * 呼叫時機：
-   *   1. _setActiveIstarts()（起飛時）              → fromScroll = false
-   *   2. scroll 事件（passive listener）             → fromScroll = true
-   *   3. resize 事件                                → fromScroll = true
-   *
-   * 每次只查 _activeIstarts 中的幾個元素（最多 3 個），開銷極低。
-   * 查完後同步更新 _ball.toX / _ball.toY，確保 _tick 讀到最新值。
-   *
-   * [方案 A] scroll / resize 觸發時，持續將飛行起點 Y snap 到目標音符 Y：
-   *   條件：fromScroll = true、flying 中、未暫停
-   *   只修改 fromY 和 arcH，完全不動 fromX / segStart。
-   *   效果：每次 scroll 事件都重新 snap，捲動過程中球的 Y 軸持續追蹤目標；
-   *         X 軸飛行路徑與時序完全不受影響，球照正常速度水平推進。
-   *   原理：fromY = toY、arcH = 0 → _parabola(p, toY, toY, 0) 恆等於 toY。
-   *
-   * @param {boolean} [fromScroll]  true = 由 scroll/resize 事件觸發
+   * _refreshLivePos(fromScroll) - 重查活躍 istart 座標
+   * scroll/resize 時更新座標；飛行中補償 fromY 與 toY 偏差。
    */
   function _refreshLivePos(fromScroll) {
     for (var i = 0; i < _activeIstarts.length; i++) {
@@ -290,31 +237,11 @@
     // ── 共同前置條件：flying 中、未暫停 ─────────────────────────
     if (_ball.state !== 'flying' || _ball.pausedProgress >= 0) return;
 
-    // [方案 A] scroll / resize 觸發：持續將 fromY snap 到目標音符 Y
-    // 只修改 fromY 和 arcH，完全不動 fromX / segStart，
-    // 確保 X 軸飛行路徑與時序不受影響。
-    // fromY = toY、arcH = BOUNCE_H → _parabola(p, toY, toY, 0) 結果永遠是 toY，
-    // 球在 Y 軸固定於目標音符高度，X 軸照原本進度正常推進。
+    // scroll/resize 觸發：fromY snap 到 toY，球 Y 軸固定於目標
     if (fromScroll) {
       _ball.fromY = _ball.toY;
       _ball.arcH  = BOUNCE_H;
     }
-  }
-
-  /**
-   * _liveCx(istart) - 從 _livePos 取 X，找不到回傳 0
-   */
-  function _liveCx(istart) {
-    var p = istart && _livePos[istart];
-    return p ? p.cx : 0;
-  }
-
-  /**
-   * _liveCy(istart) - 從 _livePos 取 Y，找不到回傳視窗中央
-   */
-  function _liveCy(istart) {
-    var p = istart && _livePos[istart];
-    return p ? p.cy : window.innerHeight / 2;
   }
 
   /**
@@ -334,11 +261,8 @@
 
   /**
    * _startFly(fromX, fromY, toX, toY, durMs, toIstart, arcH)
-   *
-   * 開始一段飛行。
-   * toIstart 用於記錄到 _ball._currentToIstart，
-   * 供 _refreshLivePos 在 scroll 時知道要更新哪個終點。
-   *
+   * 開始一段飛行。arcH 省略時用 BOUNCE_H。
+   * 調用端負責在前面呼叫 performance.now() 並傳入給相關狀態。
    * @param {number}      fromX, fromY  起點 viewport 座標
    * @param {number}      toX,   toY    終點 viewport 座標
    * @param {number}      durMs         飛行時長（ms）
@@ -380,43 +304,70 @@
   }
 
   /**
-   * _resetLead(pausedAt) - 取消提前起飛的 setTimeout 並重置所有相關旗標
-   *
-   * 重置：_leadTimeoutId / _leadScheduledAt / _leadPausedAt。
-   *
-   * @param {number} [pausedAt] - 傳入 performance.now() 時，將 _leadPausedAt
-   *   設為該時間點（onPause 用，供 onResume 計算剩餘等待）；
-   *   省略時 _leadPausedAt 歸零（onPlayStart / onPlayEnd 用）。
+   * _preHighlightNote(istart) - 預點亮下一音符
+   * 加 abcr-pre CSS class，同時觸發自動捲動。
    */
-  function _resetLead(pausedAt) {
+  function _preHighlightNote(istart) {
+    if (!istart) return;
+    var preElts = document.querySelectorAll('.abcr-pre');
+    for (var i = 0; i < preElts.length; i++) {
+      preElts[i].classList.remove('abcr-pre');
+    }
+    var elts = document.getElementsByClassName('_' + istart + '_');
+    for (var j = 0; j < elts.length; j++) {
+      elts[j].classList.add('abcr-pre');
+    }
+    // 觸發自動捲動（與 setNoteOp 相同的邏輯）
+    if (typeof UIController !== 'undefined' && UIController.scrollToNote) {
+      UIController.scrollToNote(istart);
+    }
+  }
+
+  /**
+   * _clearPreHighlight() - 清除 abcr-pre 高亮
+   */
+  function _clearPreHighlight() {
+    var preElts = document.querySelectorAll('.abcr-pre');
+    for (var i = 0; i < preElts.length; i++) {
+      preElts[i].classList.remove('abcr-pre');
+    }
+  }
+
+  /**
+   * _resetLead(now) - 清除 leadTimeout，保存 pause 快照
+   */
+  function _resetLead(now) {
     if (_leadTimeoutId !== null) {
       clearTimeout(_leadTimeoutId);
       _leadTimeoutId = null;
+      if (typeof now === 'number') {
+        _leadPausedAt = now;
+      }
     }
-    _leadScheduledAt = -1;
-    _leadPausedAt    = (pausedAt !== undefined) ? pausedAt : -1;
   }
 
   /**
    * _clearCanvas() - 清除畫布
    */
   function _clearCanvas() {
-    if (_canvas) _ctx.clearRect(0, 0, _canvas.width, _canvas.height);
+    if (_ctx) {
+      _ctx.clearRect(0, 0, _canvas.width, _canvas.height);
+    }
   }
 
   /**
-   * _drawBall(x, y, opacity) - 在 (x, y) 畫小球
+   * _drawBall(x, y, op) - 在指定位置繪製小球（op：透明度）
    */
-  function _drawBall(x, y, opacity) {
+  function _drawBall(x, y, op) {
     if (!_ctx) return;
-    _ctx.save();
-    _ctx.globalAlpha = (opacity !== undefined) ? opacity : 1;
-    _ctx.beginPath();
-    _ctx.arc(x, y, BALL_R, 0, Math.PI * 2);
     _ctx.fillStyle = BALL_COLOR;
+    _ctx.globalAlpha = op !== undefined ? op : 1;
+    _ctx.beginPath();
+    _ctx.arc(x, y, BALL_R, 0, 2 * Math.PI);
     _ctx.fill();
-    _ctx.restore();
+    _ctx.globalAlpha = 1;
   }
+
 
   // ══════════════════════════════════════════
   // rAF 主迴圈
@@ -424,21 +375,7 @@
 
   /**
    * _tick(now) - requestAnimationFrame 回調
-   *
-   * 使用 var 宣告（非 function 宣告），確保 _ensureRaf 內
-   * requestAnimationFrame(_tick) 捕捉到的永遠是同一個函式引用。
-   *
-   * 效能原則：
-   *   _tick 內不做任何 DOM query。
-   *   所有座標從 _livePos / _ball.toX/Y 直接讀取（純 JS 物件查詢）。
-   *   _livePos 由 scroll/resize 事件或起飛時機更新，與 _tick 解耦。
-   *
-   * 狀態說明：
-   *   'drop_wait'    → 球靜止在第一音符正上方 BOUNCE_H 處，等待 leadTimeout
-   *   'flying'       → 拋物線飛行（含第一音符直線掉落），toX/Y 由 _refreshLivePos 同步
-   *   'idle_at_note' → 停在終點音符，座標從 _livePos 取
-   *   'done'         → 淡出，座標固定（右邊界，不需追蹤）
-   *   其他（idle）    → 清畫布後停止
+   * 效能原則：_tick 內不做任何 DOM query，所有座標從 _livePos 直接讀取。
    */
   var _tick = function (now) {
     _rafId = null;  // 每幀重設，讓下面的 _ensureRaf 可以重新排
@@ -451,7 +388,7 @@
       // scroll 時由 _refreshLivePos 同步 _livePos，重畫位置自動校正
       case 'drop_wait': {
         var dwPos = _livePos[_ball._firstIstart];
-        var dwX   = dwPos ? dwPos.cx : _ball.fromX;
+        var dwX   = dwPos ? dwPos.cx : 0;
         var dwY   = dwPos ? (dwPos.cy - BOUNCE_H) : _ball.dropFromY;
         _drawBall(dwX, dwY);
         _ensureRaf();
@@ -473,25 +410,32 @@
         var fy = _parabola(progress, _ball.fromY, _ball.toY, _ball.arcH);
         _drawBall(bx, fy);
 
-        if (progress < 1) {
+        if (progress < _ball.stopAt) {
           _ensureRaf();
         } else {
-          // 飛行完成
+          // 飛行完成（含 stopAt=0.5 的換行 / isJump 第一段）
           if (_ball.wrapPending) {
-            // 換行第二段：從左邊界飛到 next 音符
+            // 換行 / 跳躍第二段：在目標音符正上方直線掉落（同第一拍落地動畫）
+            // isJump 的 wrapToIstart 已由 hook-bridge [ball:jump-patch] 修補為實際落點，
+            // 與換行路徑完全對稱，無需分岔。
             _ball.wrapPending = false;
+            _ball.stopAt      = 1.0;   // 第二段跑完整段
             var wrapIstart = _ball.wrapToIstart;
             var wrapPos    = _livePos[wrapIstart];
             var wrapToX    = wrapPos ? wrapPos.cx : 0;
             var wrapToY    = wrapPos ? wrapPos.cy : _ball.toY;
-            var leftX      = _svgLeftEdge() + BALL_R;
+            // 掉落起點：目標音符正上方 BOUNCE_H 處（同 onPlayStart）
+            var wrapFromY  = wrapToY - BOUNCE_H;
             // 預先登記 wrapIstart 的下一個音符，確保落地時 _livePos[nextIstart]
             // 已有座標，onNoteOn 起飛不會 fallback 到 fromX 造成頓挫
-            var _wpo             = abc2svg && abc2svg._current_po;
-            var _wMeta           = _wpo && _wpo._ballMeta && _wpo._ballMeta[wrapIstart];
-            var _wrapNextIstart  = _wMeta ? _wMeta.nextIstart : null;
+            var _wpo            = abc2svg && abc2svg._current_po;
+            var _wMeta          = _wpo && _wpo._ballMeta && _wpo._ballMeta[wrapIstart];
+            var _wrapNextIstart = _wMeta ? _wMeta.nextIstart : null;
             _setActiveIstarts(_wrapNextIstart ? [wrapIstart, _wrapNextIstart] : [wrapIstart]);
-            _startFly(leftX, wrapToY, wrapToX, wrapToY, _ball.wrapDur, wrapIstart);
+            // 第二段開始時點亮目標音符（觸發自動捲動）
+            _preHighlightNote(wrapIstart);
+            // arcH = 0：直線掉落，不彎曲
+            _startFly(wrapToX, wrapFromY, wrapToX, wrapToY, _ball.wrapDur, wrapIstart, 0);
             _ensureRaf();
           } else if (_ball._afterFlyToDone) {
             // 曲尾：切換到淡出狀態
@@ -503,7 +447,7 @@
             _ball.fadeStart        = now;
             _ensureRaf();
           } else {
-            // 正常飛行結束：轉 idle_at_note
+            // 正常飛行結束：停在音符上，等待下一個 on=true
             _ball.state = 'idle_at_note';
             _ensureRaf();
           }
@@ -515,11 +459,10 @@
       // 座標從 _livePos 讀（scroll 時已更新）
       case 'idle_at_note': {
         var nx = _ball._currentToIstart
-          ? _liveCx(_ball._currentToIstart)
-          : _ball.toX;
-        var ny = _ball._currentToIstart
-          ? _liveCy(_ball._currentToIstart)
-          : _ball.toY;
+          ? _livePos[_ball._currentToIstart]
+          : null;
+        var ny = nx ? nx.cy : _ball.toY;
+        nx = nx ? nx.cx : _ball.toX;
         _drawBall(nx, ny);
         _ensureRaf();
         break;
@@ -537,10 +480,6 @@
         }
         break;
       }
-
-      // ── 其他狀態（idle）：清畫布後停止 ──────────────────────────
-      default:
-        break;
     }
   };
 
@@ -549,74 +488,61 @@
   // ══════════════════════════════════════════
 
   var BallController = {
-
-    // ══════════════════════════════════════════
-    // 初始化
-    // ══════════════════════════════════════════
-
     /**
-     * init() - 建立 canvas 並掛載到 body
-     *
-     * 由 loader.js doRender 完成後呼叫（只需呼叫一次）。
-     * 多次呼叫安全（冪等）。
+     * init() - 初始化（doRender 完成後呼叫）
+     * 建立畫布、掛載事件監聽
      */
     init: function () {
       if (_canvas) return;
+
       _canvas = document.createElement('canvas');
-      _canvas.style.cssText = [
-        'position:fixed',
-        'top:0',
-        'left:0',
-        'width:100%',
-        'height:100%',
-        'pointer-events:none',  // 不攔截滑鼠事件
-        'z-index:' + BALL_Z
-      ].join(';');
-      _canvas.width  = window.innerWidth;
-      _canvas.height = window.innerHeight;
+      _canvas.style.cssText = 'position: fixed; left: 0; top: 0; ' +
+                              'width: 100%; height: 100%; ' +
+                              'pointer-events: none; z-index: ' + BALL_Z;
       document.body.appendChild(_canvas);
       _ctx = _canvas.getContext('2d');
 
-      // 視窗大小改變時同步畫布尺寸，並重查活躍音符座標
+      _canvas.width  = window.innerWidth;
+      _canvas.height = window.innerHeight;
+
       window.addEventListener('resize', function () {
-        if (!_canvas) return;
         _canvas.width  = window.innerWidth;
         _canvas.height = window.innerHeight;
         _refreshLivePos(true);
       });
 
       // 捲動時重查活躍音符座標（passive，不阻塞捲動）
-      // 只查 _activeIstarts 中的 2~3 個元素，開銷極低
-      // fromScroll = true：觸發方案 C snap，將球 Y 軸對齊目標音符
       window.addEventListener('scroll', function () { _refreshLivePos(true); }, { passive: true });
     },
 
-    // ══════════════════════════════════════════
-    // 播放生命週期 hooks（由 abcplay-driver.js 呼叫）
-    // ══════════════════════════════════════════
+    /**
+     * clearValidCache() - 清除 istart 快取（doRender 重新渲染時呼叫）
+     */
+    clearValidCache: function () {
+      _validIstarts.clear();
+    },
 
     /**
      * onPlayStart(firstIstart, firstOnMs) - 播放開始
-     *
-     * 小球出現在第一音符正上方 BOUNCE_H 高度靜止（drop_wait 狀態），
-     * 在第一個 on=true 之前 LEAD_MS 毫秒開始直線掉落，
-     * 正好在音符點亮時落地。
-     *
-     * 掉落使用 arcH=0 的 _startFly（直線，無拋物線弧），
-     * 視覺上呈現「自然落下」而非橫向飛入。
-     *
-     * @param {number} firstIstart - 第一個音符的 istart
-     * @param {number} firstOnMs   - 第一個 on=true 距現在的 ms（hook-bridge 的 st）
+     * 小球出現在第一音符正上方，等待 leadTimeout 開始掉落
      */
     onPlayStart: function (firstIstart, firstOnMs) {
       _stopRaf();
       _resetLead();
-      _firstNoteScheduled  = false;
-      _ball.wrapPending    = false;
-      _ball.pausedProgress = -1;
-      _ball._afterFlyToDone = false;
-
-      // [優化4] 重新播放時清除有效 istart 快取，確保新渲染的 DOM 重新驗證
+      _clearCanvas();
+      _clearPreHighlight();
+      _activeIstarts            = [];
+      _livePos                  = {};
+      _ball.state               = 'idle';
+      _ball.pausedProgress      = -1;
+      _ball.stopAt              = 1.0;
+      _ball.wrapPending         = false;
+      _ball.wrapToIstart        = null;
+      _ball._currentToIstart    = null;
+      _ball._afterFlyToDone     = false;
+      _ball.dropFromY           = 0;
+      _ball._firstIstart        = null;
+      _firstNoteScheduled       = false;
       _validIstarts.clear();
 
       // 即時取第一音符座標
@@ -635,9 +561,10 @@
 
       _ensureRaf();
 
-      // 提前 LEAD_MS 開始掉落
+      // 集中調用一次 performance.now()，供 leadTimeout 排程使用
+      var now = performance.now();
       var leadDelay = Math.max(0, firstOnMs - LEAD_MS);
-      _leadScheduledAt = performance.now();
+      _leadScheduledAt = now;
       _ball._leadDelay = leadDelay;
       _leadTimeoutId = setTimeout(function () {
         _leadTimeoutId   = null;
@@ -658,19 +585,23 @@
     },
 
     /**
-     * onNoteOn(istart, isAtB) - 音符點亮（on=true）
+     * onNoteOn(istart, isAtB) - 音符點亮，小球起飛
      *
-     * 小球落地，立刻以 durMs 為時長起飛飛向 next 音符。
-     * 換行時分兩段：先飛右邊界（WRAP_TO_EDGE_RATIO），再飛 next（WRAP_TO_NOTE_RATIO）。
+     * 換行 / 跳躍時分兩段：原地上升（stopAt=0.5），再從目標正上方直線掉落。
      * 曲尾時飛向右邊界後進入 done 狀態。
      *
-     * isAtB = true（選段 B 點）：原地跳躍，不理 next，不換行，
-     *   避免換行第二段從左邊界冒出的突兀感。
+     * 原地上升觸發條件：
+     *   換行：fromY 與 toY 差距超過 ROW_THRESH
+     *   meta.isJump：repeat / volta / DC / DS / Coda / Fine
      *
-     * meta 由 hook-bridge.js 填入 po._ballMeta[istart]：
-     *   { durMs: number, nextIstart: number|null }
+     * isAtB = true：原地完整拋物線（stopAt=1.0），進入 idle_at_note
+     *
+     * meta 由 hook-bridge.js 填入 po._ballMeta[istart]
      */
     onNoteOn: function (istart, isAtB) {
+      // 主清除：若上一個換行已預點亮 next，在正式 selb 接手前清除 abcr-pre
+      _clearPreHighlight();
+
       var po   = abc2svg && abc2svg._current_po;
       var meta = po && po._ballMeta && po._ballMeta[istart];
       if (!meta) return;
@@ -685,11 +616,12 @@
       var fromX   = fromPos ? fromPos.cx : _ball.toX;
       var fromY   = fromPos ? fromPos.cy : _ball.toY;
 
-      // ── 選段 B 點：原地跳躍，不理 next，不換行 ──────────────────
-      // 避免 next 在下一行時，換行第二段從左邊界冒出的突兀感。
-      // 飛行結束後進入 idle_at_note，等待 onPlayEnd 清除。
+      // ── 選段 B 點：完整拋物線原地跳（上升 + 回落），進入 idle_at_note ──
+      // play engine 循環重播會重新觸發 onPlayStart，不需第二段掉落。
       if (isAtB) {
         _setActiveIstarts([istart]);
+        _ball.wrapPending = false;
+        _ball.stopAt      = 1.0;   // 完整拋物線
         _startFly(fromX, fromY, fromX, fromY, durMs, istart);
         _ensureRaf();
         return;
@@ -698,7 +630,6 @@
       if (!nextIstart) {
         // ── 曲尾：飛向右邊界後淡出 ──────────────────────────────
         var rightX = _svgRightEdge() - BALL_R;
-        // 右邊界不是音符，toIstart = null
         _startFly(fromX, fromY, rightX, fromY, durMs, null);
         _ball._afterFlyToDone = true;
         _ensureRaf();
@@ -709,17 +640,19 @@
       var toX   = toPos ? toPos.cx : fromX;
       var toY   = toPos ? toPos.cy : fromY;
 
-      // ── 換行判斷 ─────────────────────────────────────────────
-      if (Math.abs(toY - fromY) > ROW_THRESH) {
-        // 換行：第一段飛到右邊界，第二段從左邊界飛到 next
-        // 時長分配由 WRAP_TO_EDGE_RATIO / WRAP_TO_NOTE_RATIO 控制
-        var dur1    = durMs * WRAP_TO_EDGE_RATIO;
-        var dur2    = durMs * WRAP_TO_NOTE_RATIO;
-        var rightX2 = _svgRightEdge() - BALL_R;
+      // ── 換行 / 跳躍判斷 ──────────────────────────────────────────
+      // 換行：fromY 與 toY 差距超過 ROW_THRESH
+      // isJump：repeat / volta / DC / DS / Coda / Fine 跳躍，
+      //   nextIstart 已由 hook-bridge [ball:jump-patch] 修補為實際落點，
+      //   兩段式動畫與換行完全對稱。
+      if (Math.abs(toY - fromY) > ROW_THRESH || meta.isJump) {
+        var dur1 = durMs * WRAP_UP_RATIO;
+        var dur2 = durMs * WRAP_DOWN_RATIO;
         _ball.wrapPending  = true;
         _ball.wrapToIstart = nextIstart;
         _ball.wrapDur      = dur2;
-        _startFly(fromX, fromY, rightX2, fromY, dur1, null);
+        _ball.stopAt       = 0.5;
+        _startFly(fromX, fromY, fromX, fromY, dur1, null, WRAP_BOUNCE_H);
       } else {
         // ── 同行：直接飛向 next ─────────────────────────────────
         _ball.wrapPending = false;
@@ -730,18 +663,19 @@
     },
 
     /**
-     * onPlayEnd() - 播放結束（onPlaybackEnd 觸發，含自然結束與主動停止）
-     *
+     * onPlayEnd() - 播放結束
      * 清除小球，停止 rAF。
      */
     onPlayEnd: function () {
       _resetLead();
       _stopRaf();
       _clearCanvas();
+      _clearPreHighlight();   // 保底：清除可能殘留的換行預點亮
       _activeIstarts            = [];
       _livePos                  = {};
       _ball.state               = 'idle';
       _ball.pausedProgress      = -1;
+      _ball.stopAt              = 1.0;
       _ball.wrapPending         = false;
       _ball.wrapToIstart        = null;
       _ball._currentToIstart    = null;
@@ -758,39 +692,39 @@
     /**
      * onPause() - 暫停播放
      *
-     * flying 狀態：記錄 pausedProgress，小球凍結在半空中，rAF 繼續維持顯示。
-     * drop_wait 狀態：若 leadTimeout 尚未觸發，清掉並記錄剩餘時間，
-     *               供 onResume 補排；rAF 繼續讓球靜止顯示在掉落起點。
+     * flying：記錄 pausedProgress，小球凍結在半空中，rAF 繼續維持顯示。
+     * drop_wait：若 leadTimeout 尚未觸發，清掉並記錄剩餘時間，供 onResume 補排。
      */
     onPause: function () {
-      // ── leadTimeout 保存 ──────────────────────────────────────────
-      // timeout 在跑時傳入 performance.now()，_resetLead 將其存入
-      // _leadPausedAt 供 onResume 計算剩餘等待；沒有 timeout 時歸零。
-      _resetLead(performance.now());
+      // 集中調用一次 performance.now()
+      var now = performance.now();
+      _resetLead(now);
+      // 保底：清除可能殘留的換行預點亮（第二段尚未落地就 pause）
+      _clearPreHighlight();
 
       if (_ball.state === 'flying' && _ball.pausedProgress < 0) {
         // 記錄當前進度，讓 _tick 停止推進時間
-        var elapsed = performance.now() - _ball.segStart;
-        _ball.pausedProgress = Math.min(elapsed / _ball.segDur, 1);
-        // _tick 在 flying 分支中已 _ensureRaf，繼續跑維持顯示
+        // 上限用 _ball.stopAt（換行第一段為 0.5，一般段為 1.0）
+        var elapsed = now - _ball.segStart;
+        _ball.pausedProgress = Math.min(elapsed / _ball.segDur, _ball.stopAt);
       }
-      // drop_wait：rAF 已在持續跑顯示靜止球，不需額外操作
     },
 
     /**
      * onResume() - 繼續播放
      *
-     * flying 狀態：從 pausedProgress 重新計算 segStart，繼續飛行。
-     * drop_wait 狀態：若 onPause 時清掉了 leadTimeout，
-     *               計算剩餘時間後補排。
+     * flying：從 pausedProgress 重新計算 segStart，繼續飛行。
+     * drop_wait：若 onPause 時清掉了 leadTimeout，計算剩餘時間後補排。
      */
     onResume: function () {
-      // ── leadTimeout 補排 ──────────────────────────────────────────
+      // 集中調用一次 performance.now()
+      var now = performance.now();
+      
       if (_leadPausedAt >= 0 && _leadScheduledAt >= 0 && !_firstNoteScheduled) {
         var elapsed   = _leadPausedAt - _leadScheduledAt;
         var remaining = Math.max(0, (_ball._leadDelay || 0) - elapsed);
-        var firstY2   = window.innerHeight / 2;  // fallback（_livePos 尚未更新時）
-        _leadScheduledAt = performance.now();
+        var firstY2   = window.innerHeight / 2;
+        _leadScheduledAt = now;
         // _leadScheduledAt 此處重設，確保若補排後再次 onPause，
         // 下一次 onResume 的 elapsed 計算仍以本次排程為基準。
         _ball._leadDelay = remaining;
@@ -817,7 +751,7 @@
       // ── flying 繼續 ───────────────────────────────────────────────
       if (_ball.state === 'flying' && _ball.pausedProgress >= 0) {
         // 重算 segStart，讓進度從 pausedProgress 繼續
-        _ball.segStart       = performance.now() - _ball.pausedProgress * _ball.segDur;
+        _ball.segStart       = now - _ball.pausedProgress * _ball.segDur;
         _ball.pausedProgress = -1;
         _ensureRaf();
       }
