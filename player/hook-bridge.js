@@ -121,9 +121,10 @@
   //
   function _resolveCoda(a, ctx) {
     if(!ctx) return null;
+    // 找第一個 ptim >= a.ptim 的降落點 coda
     var land = null;
-    for(var i=0; i<ctx.codaAnchors.length; i++){
-      if(ctx.codaAnchors[i].ptim >= a.ptim){ land = ctx.codaAnchors[i]; break; }
+    for(var i=0; i<ctx.codaLandAnchors.length; i++){
+      if(ctx.codaLandAnchors[i].ptim >= a.ptim){ land = ctx.codaLandAnchors[i]; break; }
     }
     if(!land) return null;
     var n = _scanToNote(land.ts_next);
