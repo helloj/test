@@ -17,8 +17,8 @@
  *   setupHooks(abc2svg_user)         – 註冊 anno_stop，開始收集跳轉符
  *   buildContextForTune(first)       – 為一首曲子建立 jumpCtx（需在 abcplay.add 之後呼叫）
  *   resetAllContexts()               – 重置所有 ctx 的 anchor 狀態（播放前呼叫）
- *   walkAnchors(s, ctx, repn, speed) – 走過 anchor 鏈，返回 { target, stimDelta }
- *   handleAnchor(s, ctx, repn)       – 單一 anchor 跳轉決策，返回 target symbol 或 null
+ *   walkAnchors(s, ctx, speed)       – 走過 anchor 鏈，返回 { target, stimDelta }
+ *   handleAnchor(s, ctx)             – 單一 anchor 跳轉決策，返回 target symbol 或 null
  *   suspendPlayback(tuneIdx)         – 保存指定 tune 的 anchor 狀態快照
  *   resumePlayback(tuneIdx)          – 恢復指定 tune 的 anchor 狀態快照
  *   reset()                          – 清除所有狀態（doRender 重渲染前呼叫）
@@ -39,6 +39,7 @@
  *
  * 錨點分兩類：
  *   - jump anchor：帶 _jumpAnchor=true，有 jumpDC/jumpDS/jumpCoda/jumpFine
+ *                  jumpDC / jumpDS 初始值一律 true（遇到即跳，標準樂理）。
  *   - land anchor：帶 _landAnchor=true，是跳轉目標，無狀態
  *     （tuneStart / segno / coda / fine）
  *
@@ -117,27 +118,6 @@
   }
 
   /**
-   * 判斷 jumpSym 是否在某個 repeat 括弧（|: ... :|）內。
-   *
-   * 方法：往 ts_next 方向掃，找到第一個帶 rep_p 的 BAR（即 :|）。
-   *   - rep_p 是 ToAudio.add() 在 :| 上設定的指標，指向對應的 |:。
-   *   - 若 rep_p.ptim <= jumpSym.ptim，表示這個 |: 在 jump 之前，
-   *     jump 確實落在這對 |: ... :| 括弧內 → 回傳 true。
-   *   - 若找不到任何帶 rep_p 的 BAR，或找到的 :| 其 rep_p.ptim > jumpSym.ptim
-   *     （屬於更後面的 repeat），→ 回傳 false。
-   */
-  function _isInsideRepeat(jumpSym) {
-    var s = jumpSym.ts_next;
-    while (s) {
-      if (s.type === abc2svg.C.BAR && s.rep_p) {
-        return s.rep_p.ptim <= jumpSym.ptim;
-      }
-      s = s.ts_next;
-    }
-    return false;
-  }
-
-  /**
    * _insertAnchor(refSym, extra, mode, rangeMin)
    *
    * 統一錨點插入函式，支援三種模式：
@@ -145,7 +125,10 @@
    *   'before'     插在 refSym 同 ptim 群組的最前面（多聲部安全）。
    *                回溯時遇到非 anchor 且 ptim 較小的節點即停，
    *                遇到已有 anchor 也停（不穿透），保留呼叫順序。
-   *                用於 fine / segno / coda / jump anchor。
+   *                用於所有 anchor：landing（segno/coda/fine）及 jump（DC/DS）。
+   *                jump anchor 的 ref 由 _findJumpRef() 決定：
+   *                  deco_sym 往 ts_next 找，遇到 BAR 改往 ts_prev 找前一個音符，
+   *                  確保 anchor 不跨越小節線，插在正確音符之後、BAR 之前。
    *
    *   'chain-head' 插到整條鏈的最前面（tuneStartAnchor 用）。
    *                ptim 取第一個有 ptim 值的節點。
@@ -293,12 +276,16 @@
     var jumpAnchors  = [];
 
     // 依照 a_dd 書寫順序插入 anchor（同一 sym 上多個 deco 保持原始順序）
-    // _findMainChainRef：從 first 往 ts_next 找 ptim === targetPtim 的節點。
-    // 優先回傳非 BAR 節點（音符/休止符），BAR 留作 fallback。
-    // 原因：BAR symbol 作為插入參考點時，_insertAnchor('before') 的回溯
-    // 會在停止條件5（遇到 bar_type）立刻停住，導致 anchor 插在 BAR 之後，
-    // 若該 BAR 是 :|N volta 結束 bar，播放時被 volta 機制跳過，anchor 踩不到。
-    // 典型案例：:|2 !segno!（segno 與 :|2 同 ptim）→ 應插在2房後第一音符之前。
+    //
+    // _findMainChainRef：landing anchor（segno/fine/coda）用。
+    //   從 first 往 ts_next 找 ptim === targetPtim 的節點，優先非 BAR。
+    //   BAR 作為 ref 時，'before' 回溯停在 bar_type 條件，anchor 插在 BAR 之後。
+    //
+    // _findJumpRef：jump anchor（DC/DS）用。
+    //   從 deco_sym 往 ts_next 找：遇到音符直接用；遇到任何 BAR 改往 ts_prev 找
+    //   前一個音符，確保 anchor 不跨越小節線，插在正確音符之後、BAR 之前。
+    //   書寫語義：DC/DS 寫在音符之後或 BAR 之前，所謂 "before 下一個" 等同
+    //   "after 前一個"，最終鏈位置：前一個音符 → anchor → BAR/下一音符。
     function _findMainChainRef(targetPtim) {
       var s = first;
       var fallback = null;
@@ -310,6 +297,15 @@
         s = s.ts_next;
       }
       return fallback;
+    }
+
+    function _findJumpRef(decoSym) {
+      // anchor 插在 deco_sym 之前：
+      //   deco_sym 是音符/REST → 該音符不發聲，直接跳轉（DC 寫在它前面）
+      //   deco_sym 是 BAR      → 'before' 回溯遇到 ptim 更小的前一個音符停下，
+      //                          anchor 插在「前一個音符之後、BAR 之前」
+      //                          前一個音符正常發聲，掃到 anchor 時 [B2] 觸發
+      return decoSym;
     }
 
     decoList.forEach(function(s) {
@@ -344,24 +340,26 @@
         var isDSfine = name === 'D.S.alfine';
         var isAnyJump = isDC || isDS || isDCcoda || isDScoda || isDCfine || isDSfine;
         if (isAnyJump) {
-          var inRepeat = _isInsideRepeat(s);
+          // DC/DS 遇到就跳，初始值一律 true，不做 repeat 括弧內的特殊判斷。
+          // 標準樂理：DS/DC 本身沒有「等待彈回」的語義，由樂譜作者自行決定放置位置。
           var extra = {
             _jumpAnchor: true,
-            _inRepeat:   inRepeat,
-            _isDC:       isDC  || isDCcoda || isDCfine,
-            _isDS:       isDS  || isDScoda || isDSfine,
-            jumpDC:   (isDC   || isDCcoda || isDCfine) && !inRepeat,
-            jumpDS:   (isDS   || isDScoda || isDSfine) && !inRepeat,
+            jumpDC:   isDC  || isDCcoda || isDCfine,
+            jumpDS:   isDS  || isDScoda || isDSfine,
             jumpCoda: isDCcoda || isDScoda,
             jumpFine: false,
             _init: {
-              jumpDC:   (isDC   || isDCcoda || isDCfine) && !inRepeat,
-              jumpDS:   (isDS   || isDScoda || isDSfine) && !inRepeat,
+              jumpDC:   isDC  || isDCcoda || isDCfine,
+              jumpDS:   isDS  || isDScoda || isDSfine,
               jumpCoda: isDCcoda || isDScoda,
               jumpFine: false
             }
           };
-          var ref = _findMainChainRef(s.ptim) || s;
+          // _findJumpRef：從 deco_sym 往 ts_next 找，遇到 BAR 改往 ts_prev，
+          // 確保 anchor 插在「前一個音符之後、BAR 之前」，不跨越小節線。
+          // 統一使用 'before' 模式：ref 是 BAR 之後的第一個音符，
+          // 'before' 回溯遇到 bar_type 停住，anchor 插在 BAR 之後、音符之前。
+          var ref = _findJumpRef(s);
           var a = _insertAnchor(ref, extra, 'before', range[0]);
           if (jumpAnchors.indexOf(a) < 0) jumpAnchors.push(a);
         }
@@ -512,7 +510,7 @@
     },
 
     /**
-     * walkAnchors(s, ctx, repn, speed)
+     * walkAnchors(s, ctx, speed)
      *
      * 走過連續 anchor 鏈，執行跳轉直到落在非 anchor 節點。
      * 若落點是 tuneEndAnchor，target 為 null 表示應結束播放。
@@ -524,16 +522,15 @@
      *
      * @param  {symbol}  s     - 起始 anchor symbol
      * @param  {object}  ctx   - jumpCtx
-     * @param  {boolean} repn  - po.repn 的當前值
      * @param  {number}  speed - po.conf.speed（播放速度倍率）
      * @return {{ target: symbol|null, stimDelta: number }}
      */
-    walkAnchors: function (s, ctx, repn, speed) {
+    walkAnchors: function (s, ctx, speed) {
       var stimDelta = 0;
       var limit = 20;
       while (s && s._anchor && limit-- > 0) {
         if (s._tuneEndAnchor) return { target: null, stimDelta: stimDelta };
-        var target = JumpEngine.handleAnchor(s, ctx, repn);
+        var target = JumpEngine.handleAnchor(s, ctx);
         if (target) {
           stimDelta += (s.ptim - target.ptim) / speed;
           if (target._codaAnchor) target._isLanding = true;  // 標記降落
@@ -547,33 +544,23 @@
     },
 
     /**
-     * handleAnchor(s, ctx, repn)
+     * handleAnchor(s, ctx)
      *
      * 單一 anchor 跳轉決策。
      * 返回跳轉目標 symbol，或 null（不跳轉，繼續往下）。
      *
-     * API 差異（相對 loader.js _handleAnchor）：
-     *   原版傳入 po 以讀取 po.repn；新版只傳 repn 值，消除對 po 的依賴。
+     * DC/DS 遇到就跳（jumpDC/jumpDS 初始為 true，用完設 false）。
+     * 標準樂理：DS/DC 沒有「等待彈回」的語義，由樂譜作者決定放置位置。
      *
-     * @param  {symbol}  s    - anchor symbol
-     * @param  {object}  ctx  - jumpCtx
-     * @param  {boolean} repn - po.repn 的當前值
+     * @param  {symbol}  s   - anchor symbol
+     * @param  {object}  ctx - jumpCtx
      * @return {symbol|null}
      */
-    handleAnchor: function (s, ctx, repn) {
+    handleAnchor: function (s, ctx) {
       if (!ctx) return null;
       var target = null;
 
       if (s._jumpAnchor) {
-        // 若 anchor 在 repeat 括弧內，且目前是第一次 pass
-        // （repn === false 表示尚未回彈過，即還在第一次通過），
-        // 則 enable 而不跳，等第二次路過再執行跳轉。
-        if (s._inRepeat && !repn) {
-          if (s._isDC) s.jumpDC = true;
-          if (s._isDS) s.jumpDS = true;
-          return null;  // 第一次：pass，不跳
-        }
-
         if (s.jumpDC) {
           s.jumpDC = false;
           ctx.fineAnchors.forEach(function(a) { a.jumpFine = true; });
