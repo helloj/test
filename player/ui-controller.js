@@ -98,8 +98,10 @@
       UIController._setupButtons();
       UIController._setupSpeedPanel();
       // [playline] 捲動時重新定位所有顯示中的細線
+      // [passageMark] 捲動時重新定位所有顯示中的色帶
       window.addEventListener('scroll', function () {
         UIController._repositionLines();
+        if (root.PassageMarkPackage) root.PassageMarkPackage.reposition();
       }, { passive: true });
     },
 
@@ -160,6 +162,9 @@
         /* width/height 由 _positionLine 動態設定，與對應 .abcr rect 尺寸一致     */
         ".playline{position:fixed;left:0;top:0;background:#8b3a3a;opacity:0;pointer-events:none;z-index:20;border-radius:1px;will-change:transform}",
         ".playline.on{opacity:0.4}",
+        /* [passageMark] 樂句螢光筆色帶：pause 時顯示，覆蓋播放走過的樂句範圍  */
+        /* 每行一個 div，x_min~x_max 為該行所有音符的水平跨度                   */
+        ".passage-band{position:fixed;left:0;top:0;background:#c285ff;opacity:0.32;pointer-events:none;z-index:18;border-radius:3px;will-change:transform}",
         "#errbanner{display:none;background:#c0392b;color:#fff;padding:6px 16px;font-size:.82rem;cursor:pointer}",
         ".tune-block{border:1px solid #ccc;border-radius:6px;margin:16px auto;max-width:85%;padding:12px 16px 0;background:#fffdf8}",
         ".tune-block p{margin:0 0 6px;font-size:.88rem;color:#444;white-space:pre-wrap;font-family:monospace}",

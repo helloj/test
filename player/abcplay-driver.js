@@ -356,64 +356,276 @@
   }
 
   // ══════════════════════════════════════════
-  // 音符高亮中介（notehlight）
+  // 音符高亮中介（notehlight pipeline）
   // ══════════════════════════════════════════
+
+  // ── on=true pipeline handlers ─────────────────────────────────────
+  //
+  // 每個 handler 回傳 false 表示短路（中斷 pipeline），不回傳則繼續。
+  // 順序合約（不可任意調換）：
+  //   1. pipe_pauseGuard    — 最優先：PAUSED 狀態下丟棄所有 on，防止殘留高亮
+  //   2. pipe_overshoot     — 越界時呼叫 stopPlay/play_tune，必須在 curNotes 更新之前短路
+  //   3. pipe_curNotesOn    — 更新 lastNote / curNotes（狀態必須在 guard 之後才寫入）
+  //   4. pipe_stoppingGuard — STOPPING 過渡期攔截 on，curNotes 已更新但不觸發 DOM
+  //   5. pipe_domOn         — DOM 高亮，必須在 guard 全部放行後才執行
+  //   6. pipe_ball          — BallController 通知，依賴 DOM 已更新
+
+  /** [pause-guard] PAUSED 中 on 回呼已排進 task queue 清不掉，在此攔截。off 不攔截。 */
+  function pipe_pauseGuard(i) {
+    if (isState(PlayState.PAUSED)) return false;
+  }
+
+  /**
+   * [B-overshoot] on 觸發時音符 istart 已超過選段終點，
+   * 表示音符已送進 WebAudio Buffer 無法撤回，立即停播重播。
+   * 閾值使用 play.ei.istart 而非 selx[1]，避免 B < A 時誤觸發。
+   */
+  function pipe_overshoot(i) {
+    if (play.ei && play.ei.istart && i > play.ei.istart && isState(PlayState.PLAYING)) {
+      stopPlay();
+      play_tune();
+      return false;
+    }
+  }
+
+  /** [curNotes] 多聲部：同一時間點多個 istart 都可以亮，不清舊。 */
+  function pipe_curNotesOn(i) {
+    play.lastNote = i;
+    play.curNotes.add(i);
+  }
+
+  /** [stopping-guard] STOPPING 過渡期攔截 on，避免 stop 後畫面殘留高亮。 */
+  function pipe_stoppingGuard(i) {
+    if (isState(PlayState.STOPPING)) return false;
+  }
+
+  /** [dom] DOM 高亮操作委派給 UIController。 */
+  function pipe_domOn(i) {
+    play.onNoteHighlight(i, true);
+  }
+
+  /**
+   * [ball] on=true 時通知 BallController 落地並起飛向 next 音符。
+   * isAtB：當前音符正好是選段終點（play.ei），球應原地跳躍，不飛向 next。
+   * 同樣使用 play.ei.istart，與 overshoot 閾值保持一致。
+   */
+  function pipe_ball(i) {
+    if (root.BallController) {
+      var isAtB = !!(play.ei && play.ei.istart && i === play.ei.istart);
+      root.BallController.onNoteOn(i, isAtB);
+    }
+  }
+
+  // ── off=false pipeline handlers ───────────────────────────────────
+
+  /** [curNotes] off：從多聲部計數中移除。 */
+  function pipe_curNotesOff(i) {
+    play.curNotes.delete(i);
+  }
+
+  /** [dom] DOM 熄滅委派給 UIController。 */
+  function pipe_domOff(i) {
+    play.onNoteHighlight(i, false);
+  }
+
+  // ── pipeline 註冊 ──────────────────────────────────────────────────
+  //
+  // _onHandlers  : on=true  時依序執行，handler 回傳 false 即短路。
+  // _offHandlers : on=false 時依序執行（off 路徑目前無需短路）。
+  //
+  // 擴充（如 trail）：在對應 pipeline 末端 push 新 handler 即可，
+  // 不需修改 notehlight 本體。
+  var _onHandlers = [
+    pipe_pauseGuard,
+    pipe_overshoot,
+    pipe_curNotesOn,
+    pipe_stoppingGuard,
+    pipe_domOn,
+    pipe_ball
+  ];
+
+  var _offHandlers = [
+    pipe_curNotesOff,
+    pipe_domOff
+  ];
 
   /**
    * notehlight(i, on) - 音符亮/暗的中介層（由後端的 onnote callback 觸發）
    *
-   * 三項職責（均需讀取 Driver 私有狀態，不適合放在 UIController）：
-   *   1. pause-guard：paused 中 on 回呼已在 task queue 排隊清不掉，在此攔截
-   *   2. B-overshoot：音符 istart 超過選段終點時立即停播重播
-   *   3. curNotes 維護：多聲部計數
-   *
-   * DOM 操作委派給 UIController（play.onNoteHighlight 由 setUICallbacks 填入）。
+   * 純 dispatcher：依 on 選擇 pipeline，依序呼叫 handler，
+   * 任一 handler 回傳 false 即短路停止。
+   * 所有業務邏輯移至 pipe_* 函式，本體不再直接讀取播放狀態。
    */
   function notehlight(i, on) {
-    // ── [pause-guard] paused 中 on 回呼已在 task queue 排隊清不掉，在此攔截 ──
-    // off 回呼不攔截：讓音符暗掉是正確的，避免殘留高亮。
-    if (isState(PlayState.PAUSED) && on) return;
-
-    // ── [B-overshoot] B 點越界偵測 ────────────────────────────────
-    // onnote on 觸發時，若當前音符 istart 已超過選段終點，
-    // 表示 po.s_end 設置時音符已送進 WebAudio Buffer，無法撤回。
-    // 立即停播並從原 A/B 點重新起播，selx 狀態不變，
-    // play_tune() 自動感知 A/B 重算 si/ei。
-    //
-    // 閾值使用 play.ei.istart（後端實際終點）而非 selx[1]（用戶點擊的原始位置）。
-    // 原因：B < A 時 selx[1] < 現在播放點，overshoot 在每個音符都誤觸發。
-    //       play.ei 是 play_tune() 經 A/B swap 計算後的正確終點，不受點擊順序影響。
-    if (on && play.ei && play.ei.istart && i > play.ei.istart && isState(PlayState.PLAYING)) {
-      stopPlay();
-      play_tune();
-      return;
+    var handlers = on ? _onHandlers : _offHandlers;
+    for (var h = 0; h < handlers.length; h++) {
+      if (handlers[h](i) === false) return;
     }
-    // ── [B-overshoot] end ─────────────────────────────────────────
-
-    if (on) {
-      // 多聲部：同一時間點多個 istart 都可以亮，不清舊
-      play.lastNote = i;
-      play.curNotes.add(i);
-    } else {
-      play.curNotes.delete(i);
-    }
-    if (isState(PlayState.STOPPING) && on) return;
-
-    // DOM 高亮操作委派給 UIController
-    play.onNoteHighlight(i, on);
-
-    // ── [ball:on-note] ────────────────────────────────────────────
-    // on=true 時通知 BallController 落地並起飛向 next 音符。
-    // onPlayStart（drop_wait 排程）已在 hook-bridge play_cont 排程階段呼叫，
-    // 此處只需觸發落地動作。
-    // isAtB：當前音符正好是選段終點（play.ei），球應原地跳躍，不飛向 next。
-    // 同樣改用 play.ei.istart，與 overshoot 閾值保持一致。
-    if (on && root.BallController) {
-      var isAtB = !!(play.ei && play.ei.istart && i === play.ei.istart);
-      root.BallController.onNoteOn(i, isAtB);
-    }
-    // ── [ball:on-note] end ────────────────────────────────────────
   }
+
+  // ══════════════════════════════════════════
+  // TrailPackage — 播放軌跡高亮
+  // ══════════════════════════════════════════
+
+  // ══════════════════════════════════════════
+  // PassageMarkPackage — 樂句螢光筆標記
+  // ══════════════════════════════════════════
+
+  /**
+   * PassageMarkPackage
+   *
+   * 記錄播放走過的樂句（最多 PASSAGE_MAX 個音符），
+   * pause 時將樂句按行分組，每行繪製一條螢光筆色帶（fixed div overlay）；
+   * resume / stop 時移除所有色帶並清空記錄。
+   *
+   * 色帶定位：
+   *   每行取該行所有音符 rect 的 x_min（最左）~ x_max+width（最右）與 y / height，
+   *   以一個 .passage-band div 覆蓋整段，半透明黃色圓角色塊。
+   *   scroll 時需重新定位（與 playline 相同機制，由外部 scroll listener 呼叫 reposition）。
+   *
+   * hook 點：
+   *   onNoteOn(i)   — 由 pipe_passageMark 呼叫（pipeline on=true 末端）
+   *   onPause()     — pausePlay() 呼叫：按行分組，繪製色帶
+   *   onResume()    — resumePlay() 呼叫（ac.resume() 前，同步區）：移除色帶並清空
+   *   onStop()      — stopPlay()  呼叫：清空記錄（UI 由 clearAllHighlight 負責）
+   *   reposition()  — scroll/resize 時重新定位所有顯示中的色帶
+   *
+   * 卸載方式：移除 pipe_passageMark 從 _onHandlers，移除四個 hook 呼叫點，
+   *           移除 ui-controller.js 的 scroll listener 與 passage-band CSS 即可。
+   */
+  var PassageMarkPackage = (function () {
+    var PASSAGE_MAX = 30;
+    var BAND_H      = 25;
+    var _passage  = [];    // istart 陣列，index 0 = 最舊
+    var _bandDivs = [];    // 目前顯示中的 .passage-band div（pause 期間）
+
+    /**
+     * _buildBands() - 從 _passage 的 istart 取 rect，按行分組，建立色帶 div。
+     *
+     * 分行依據：相鄰兩個 istart 的 rect.top 差距 > rect.height * 1.5 視為換行。
+     * 每行取 x_min / x_max+width / top / height，建立一個 .passage-band div。
+     */
+    function _buildBands() {
+      if (!_passage.length) return;
+
+      // 取各 istart 的第一個 .abcr rect（與 playline 保持一致）
+      var rects = [];
+      for (var k = 0; k < _passage.length; k++) {
+        var elts = document.getElementsByClassName('_' + _passage[k] + '_');
+        if (elts && elts.length) rects.push(elts[0].getBoundingClientRect());
+      }
+      if (!rects.length) return;
+
+      // 按行分組（依 top 值分段）
+      var rows = [], curRow = [rects[0]];
+      for (var r = 1; r < rects.length; r++) {
+        var prev = rects[r - 1], cur = rects[r];
+        if (Math.abs(cur.top - prev.top) > prev.height * 1.5) {
+          rows.push(curRow);
+          curRow = [];
+        }
+        curRow.push(cur);
+      }
+      rows.push(curRow);
+
+      // 每行建一個色帶 div，存 elt 引用供 reposition 動態重查
+      for (var row = 0; row < rows.length; row++) {
+        var rowRects = rows[row];
+        // var xMin = Infinity, xMax = -Infinity, yTop = rowRects[0].top, h = rowRects[0].height;
+        var xMin    = Infinity, xMax = -Infinity;
+        var yCenter = rowRects[0].top + rowRects[0].height / 2;
+        var yTop    = yCenter - BAND_H / 2;
+        var h       = BAND_H;
+        for (var n = 0; n < rowRects.length; n++) {
+          if (rowRects[n].left  < xMin) xMin = rowRects[n].left;
+          if (rowRects[n].right > xMax) xMax = rowRects[n].right;
+        }
+        var div = document.createElement('div');
+        div.className = 'passage-band';
+        _applyBandStyle(div, xMin, yTop, xMax - xMin, h);
+        document.body.appendChild(div);
+        // rowElts：存 elt 引用（非 DOMRect 快照），供 reposition 重查座標
+        var rowElts = [];
+        for (var e = 0; e < _passage.length; e++) {
+          var pelts = document.getElementsByClassName('_' + _passage[e] + '_');
+          if (pelts && pelts.length) {
+            var pr = pelts[0].getBoundingClientRect();
+            if (Math.abs(pr.top - rowRects[0].top) < rowRects[0].height * 0.5)
+              rowElts.push(pelts[0]);
+          }
+        }
+        _bandDivs.push({ div: div, elts: rowElts });
+      }
+    }
+
+    /** _applyBandStyle(div, x, y, w, h) - 套用 transform 定位與尺寸。 */
+    function _applyBandStyle(div, x, y, w, h) {
+      div.style.transform = 'translate(' + x + 'px,' + y + 'px)';
+      div.style.width     = w + 'px';
+      div.style.height    = h + 'px';
+    }
+
+    /** _removeBands() - 移除所有色帶 div，清空 _bandDivs。 */
+    function _removeBands() {
+      for (var b = 0; b < _bandDivs.length; b++) {
+        var div = _bandDivs[b].div;
+        if (div.parentNode) div.parentNode.removeChild(div);
+      }
+      _bandDivs = [];
+    }
+
+    return {
+      /** 將 i 加入樂句記錄，去重，超限移除最舊。 */
+      onNoteOn: function (i) {
+        if (_passage.indexOf(i) !== -1) return;
+        if (_passage.length >= PASSAGE_MAX) _passage.shift();
+        _passage.push(i);
+      },
+
+      /** pause：按行分組，繪製螢光筆色帶。 */
+      onPause: function () {
+        _buildBands();
+      },
+
+      /** resume（同步區）：移除色帶並清空，確保 ac.resume() 前已處理完畢。 */
+      onResume: function () {
+        _removeBands();
+        _passage = [];
+      },
+
+      /** stop：清空記錄（色帶由 clearAllHighlight 路徑呼叫 onResume 前已清，
+       *         此處只清 _passage，防止 stop 後殘留舊紀錄影響下次播放）。 */
+      onStop: function () {
+        _removeBands();
+        _passage = [];
+      },
+
+      /** reposition：scroll / resize 時重新定位所有顯示中的色帶。 */
+      reposition: function () {
+        for (var b = 0; b < _bandDivs.length; b++) {
+          var entry = _bandDivs[b];
+          if (!entry.elts || !entry.elts.length) continue;
+          var xMin = Infinity, xMax = -Infinity;
+          var yTop = 0, h = 0;
+          for (var n = 0; n < entry.elts.length; n++) {
+            var rr = entry.elts[n].getBoundingClientRect();
+            if (rr.left  < xMin) xMin = rr.left;
+            if (rr.right > xMax) xMax = rr.right;
+            if (n === 0) { yTop = rr.top; h = rr.height; }
+          }
+          _applyBandStyle(entry.div, xMin, yTop, xMax - xMin, h);
+        }
+      }
+    };
+  }());
+
+  /** [passageMark] pipeline handler：on=true 末端，guard 全部放行後才記錄。 */
+  function pipe_passageMark(i) {
+    PassageMarkPackage.onNoteOn(i);
+  }
+
+  // 將 pipe_passageMark 掛入 on=true pipeline 末端
+  _onHandlers.push(pipe_passageMark);
 
   // ══════════════════════════════════════════
   // 播放控制
@@ -471,6 +683,9 @@
     // 清殘留高亮，補亮暫停位置
     play.onClearHighlight();
     if (play.lastNote) play.onPauseHighlight(play.lastNote);
+    // ── [passageMark:pause] ─────────────────────────────────────────────
+    PassageMarkPackage.onPause();
+    // ── [passageMark:pause] end ─────────────────────────────────────────
 
     // 保存 anchor 跳轉狀態快照，確保 resume 後跳轉邏輯可完整還原
     JumpEngine.suspendPlayback(po.s_cur);
@@ -516,8 +731,11 @@
     // ── [優化4] 遞增世代號，then() 內比對，防止快速 pause/resume race condition ──
     var myGen = ++play._resumeGen;
 
-    // 清除 pause 補亮的 lastNote
+    // 清除 pause 補亮的 lastNote 與 trail 高亮（同步區，ac.resume() 前執行）
     play.onClearHighlight();
+    // ── [passageMark:resume] ────────────────────────────────────────────
+    PassageMarkPackage.onResume();
+    // ── [passageMark:resume] end ────────────────────────────────────────
 
     ac.resume().then(function() {
       // ── [優化4] 世代號不符：then() 執行前已再次 pause，放棄本次 resume ──
@@ -572,6 +790,9 @@
 
     // ── [優化5] 主動清除 onnote on/off setTimeout，Audio5.stop() 原版清不到 ──
     clearOnnoteTimouts(po);
+    // ── [passageMark:stop] ──────────────────────────────────────────────
+    PassageMarkPackage.onStop();
+    // ── [passageMark:stop] end ──────────────────────────────────────────
 
     // ── [狀態機] PAUSED 狀態的特殊處理 ──
     if (isState(PlayState.PAUSED)) {
@@ -663,6 +884,9 @@
       // （pausePlay 已清 po.timouts，只剩 _onnoteTimouts）
       var po = play._pausedPo;
       clearOnnoteTimouts(po);
+      // ── [passageMark:stop] ────────────────────────────────────
+      PassageMarkPackage.onStop();
+      // ── [passageMark:stop] end ────────────────────────────────
       play._pausedPo = null;
       ++play._resumeGen;  // 使任何進行中的 resumePlay then() 失效
       setState(PlayState.STOPPING, 'seekTo from PAUSED');
@@ -926,6 +1150,7 @@
   };
 
   // ── 掛載到全域 ────────────────────────────────────────────────────
-  root.AbcplayDriver = AbcplayDriver;
+  root.AbcplayDriver      = AbcplayDriver;
+  root.PassageMarkPackage = PassageMarkPackage;  // scroll reposition 用
 
 }(typeof globalThis !== 'undefined' ? globalThis : this));
