@@ -44,18 +44,22 @@
  *     （tuneStart / segno / coda / fine）
  *
  * per-tune pools（建立後存在 ctx）：
- *   tuneStartAnchor  曲首降落點（唯一）
- *   tuneEndAnchor    曲尾邊界（唯一）
- *   segnoAnchors[]   !segno! 降落點（ptim 去重）
- *   fineAnchors[]    !fine! 降落點（初始 jumpFine=false，由跳轉 enable）
- *   codaAnchors[]    !coda!/O 錨點（按 ptim 排序，ptim 去重）
- *                    - 若在跳轉符之前：分歧點，初始 jumpCoda=false
- *                    - 若在跳轉符之後：降落點，純 land anchor
- *   jumpAnchors[]    所有 jump anchor（loop reset 用）
+ *   tuneStartAnchor    曲首降落點（唯一）
+ *   tuneEndAnchor      曲尾邊界（唯一）
+ *   segnoAnchors[]     !segno! 降落點（ptim 去重）
+ *   fineAnchors[]      !fine! 降落點（初始 jumpFine=false，由跳轉 enable）
+ *   codaDivAnchors[]   coda 分歧點：在跳轉符（DC/DS）之前，
+ *                      初始 jumpCoda=false，由 DC/DS 跳轉時 enable。
+ *                      觸發後跳往對應 codaLandAnchor。
+ *   codaLandAnchors[]  coda 降落點：在跳轉符之後或同位置，純 land anchor。
+ *                      walkAnchors 落地後直接穿越繼續往下播，無狀態。
+ *   jumpAnchors[]      所有 jump anchor（loop reset 用）
  *
- * coda 降落標記（_isLanding）：
- *   jump anchor 跳轉時，目標 coda anchor 設 _isLanding=true。
- *   coda anchor 看到 _isLanding 時不執行分歧跳轉，清掉標記繼續往下播。
+ * coda 分歧判斷（建立期）：
+ *   以 deco_sym.ptim 與所有 jump anchor ptim 比較。
+ *   ptim < min(jumpPtims) → 分歧點（codaDivAnchors）
+ *   ptim >= min(jumpPtims) → 降落點（codaLandAnchors）
+ *   同一 sym 上的 DS/DC 與 coda（同 ptim）：coda 為降落點。
  *
  * ══════════════════════════════════════════════════════════════════
  */
@@ -125,10 +129,11 @@
    *   'before'     插在 refSym 同 ptim 群組的最前面（多聲部安全）。
    *                回溯時遇到非 anchor 且 ptim 較小的節點即停，
    *                遇到已有 anchor 也停（不穿透），保留呼叫順序。
-   *                用於所有 anchor：landing（segno/coda/fine）及 jump（DC/DS）。
-   *                jump anchor 的 ref 由 _findJumpRef() 決定：
-   *                  deco_sym 往 ts_next 找，遇到 BAR 改往 ts_prev 找前一個音符，
-   *                  確保 anchor 不跨越小節線，插在正確音符之後、BAR 之前。
+   *                用於所有 anchor（landing/jump/coda 全部）。
+   *                ref 由 _findJumpRef() 或 _findMainChainRef() 決定：
+   *                  - DC/DS/coda：_findJumpRef(decoSym) = decoSym 本身，
+   *                    'before' 回溯停在前一個音符之後、BAR 之前（主路徑）。
+   *                  - segno/fine：_findMainChainRef(ptim)，優先非 BAR 節點。
    *
    *   'chain-head' 插到整條鏈的最前面（tuneStartAnchor 用）。
    *                ptim 取第一個有 ptim 值的節點。
@@ -270,10 +275,25 @@
     // 曲尾錨點先插（鏈尾，不影響其他 anchor 的插入順序）
     var tuneEndAnchor = _insertAnchor(first, { _landAnchor: true, _tuneEndAnchor: true }, 'chain-tail');
 
-    var segnoAnchors = [];
-    var fineAnchors  = [];
-    var codaAnchors  = [];
-    var jumpAnchors  = [];
+    var segnoAnchors    = [];
+    var fineAnchors     = [];
+    var codaDivAnchors  = [];  // coda 分歧點（在 DC/DS 之前，jumpCoda 管理）
+    var codaLandAnchors = [];  // coda 降落點（在 DC/DS 之後或同位置，純 land）
+    var jumpAnchors     = [];
+
+    // 第一遍：收集所有 jump anchor 的 ptim，供 coda 分類使用
+    var jumpPtims = [];
+    decoList.forEach(function(s) {
+      if (!s.a_dd) return;
+      for (var i = 0; i < s.a_dd.length; i++) {
+        var name = s.a_dd[i] && s.a_dd[i].name;
+        if (!name) continue;
+        var isJ = name==='D.C.'||name==='D.S.'||name==='dacapo'||name==='dacoda'||
+                  name==='D.C.alcoda'||name==='D.S.alcoda'||
+                  name==='D.C.alfine'||name==='D.S.alfine';
+        if (isJ) jumpPtims.push(s.ptim);
+      }
+    });
 
     // 依照 a_dd 書寫順序插入 anchor（同一 sym 上多個 deco 保持原始順序）
     //
@@ -327,9 +347,17 @@
         }
 
         if (name === 'coda') {
-          var ref = _findMainChainRef(s.ptim) || s;
-          var a = _insertAnchor(ref, { _codaAnchor: true, jumpCoda: false }, 'before', range[0]);
-          _pushIfNewPtim(codaAnchors, a);
+          // coda 與 DC/DS 的 ref 選取邏輯相同：直接用 deco_sym，
+          // 'before' 回溯自動插在前一個音符之後、BAR 之前（主路徑上）。
+          var ref = _findJumpRef(s);
+          var isDiv = jumpPtims.some(function(jp){ return s.ptim < jp; });
+          if (isDiv) {
+            var a = _insertAnchor(ref, { _codaDivAnchor: true, jumpCoda: false }, 'before', range[0]);
+            _pushIfNewPtim(codaDivAnchors, a);
+          } else {
+            var a = _insertAnchor(ref, { _codaLandAnchor: true, _landAnchor: true }, 'before', range[0]);
+            _pushIfNewPtim(codaLandAnchors, a);
+          }
         }
 
         var isDC     = name === 'D.C.'       || name === 'dacapo';
@@ -341,7 +369,6 @@
         var isAnyJump = isDC || isDS || isDCcoda || isDScoda || isDCfine || isDSfine;
         if (isAnyJump) {
           // DC/DS 遇到就跳，初始值一律 true，不做 repeat 括弧內的特殊判斷。
-          // 標準樂理：DS/DC 本身沒有「等待彈回」的語義，由樂譜作者自行決定放置位置。
           var extra = {
             _jumpAnchor: true,
             jumpDC:   isDC  || isDCcoda || isDCfine,
@@ -370,19 +397,20 @@
     // 不走到絕對鏈頭，避免把已插好的 fine/segno anchor 甩出鏈外。
     var tuneStartAnchor = _insertAnchor(first, { _landAnchor: true, _tuneStartAnchor: true }, 'chain-head', range[0]);
 
-    // 按 ptim 排序 codaAnchors
-    codaAnchors.sort(function(a,b) { return a.ptim - b.ptim; });
+    codaDivAnchors.sort(function(a,b)  { return a.ptim - b.ptim; });
+    codaLandAnchors.sort(function(a,b) { return a.ptim - b.ptim; });
 
     var ctx = {
-      range:           range,
-      tuneStartAnchor: tuneStartAnchor,
-      tuneEndAnchor:   tuneEndAnchor,
-      segnoAnchors:    segnoAnchors,
-      fineAnchors:     fineAnchors,
-      codaAnchors:     codaAnchors,
-      jumpAnchors:     jumpAnchors,
-      _fineInitState:  fineAnchors.map(function(a)  { return a.jumpFine; }),
-      _codaInitState:  codaAnchors.map(function(a)  { return a.jumpCoda; })
+      range:            range,
+      tuneStartAnchor:  tuneStartAnchor,
+      tuneEndAnchor:    tuneEndAnchor,
+      segnoAnchors:     segnoAnchors,
+      fineAnchors:      fineAnchors,
+      codaDivAnchors:   codaDivAnchors,
+      codaLandAnchors:  codaLandAnchors,
+      jumpAnchors:      jumpAnchors,
+      _fineInitState:   fineAnchors.map(function(a) { return a.jumpFine; }),
+      _codaDivInitState:codaDivAnchors.map(function(a) { return a.jumpCoda; })
     };
     return ctx;
   }
@@ -490,10 +518,10 @@
         ctx.fineAnchors.forEach(function(a, i) {
           a.jumpFine = ctx._fineInitState[i];
         });
-        ctx.codaAnchors.forEach(function(a, i) {
-          a.jumpCoda   = ctx._codaInitState[i];
-          a._isLanding = false;
+        ctx.codaDivAnchors.forEach(function(a, i) {
+          a.jumpCoda = ctx._codaDivInitState[i];
         });
+        // codaLandAnchors 無狀態，不需重置
       };
 
       return ctx;
@@ -533,7 +561,6 @@
         var target = JumpEngine.handleAnchor(s, ctx);
         if (target) {
           stimDelta += (s.ptim - target.ptim) / speed;
-          if (target._codaAnchor) target._isLanding = true;  // 標記降落
           s = target;
         } else {
           s = s.ts_next;
@@ -564,48 +591,41 @@
         if (s.jumpDC) {
           s.jumpDC = false;
           ctx.fineAnchors.forEach(function(a) { a.jumpFine = true; });
-          // enable 所有在重播段內（曲首到 jump 之前）的 coda anchor
-          ctx.codaAnchors.forEach(function(a) {
-            if (a.ptim < s.ptim) {
-              a.jumpCoda = true;
-            }
-          });
+          // enable 所有分歧點 coda（全部，DC 重播整首）
+          ctx.codaDivAnchors.forEach(function(a) { a.jumpCoda = true; });
           target = ctx.tuneStartAnchor;
 
         } else if (s.jumpDS) {
           s.jumpDS = false;
           ctx.fineAnchors.forEach(function(a) { a.jumpFine = true; });
-          // enable 所有在重播段內（segno 到 jump 之前）的 coda anchor
+          // enable segno 到 DS 之間的分歧點 coda
           var segPtim = (ctx.segnoAnchors[0] || ctx.tuneStartAnchor).ptim;
-          ctx.codaAnchors.forEach(function(a) {
-            if (a.ptim >= segPtim && a.ptim < s.ptim) {
-              a.jumpCoda = true;
-            }
+          ctx.codaDivAnchors.forEach(function(a) {
+            if (a.ptim >= segPtim) a.jumpCoda = true;
           });
           target = ctx.segnoAnchors[0] || ctx.tuneStartAnchor;
 
         } else if (s.jumpCoda) {
+          // D.S.alcoda / D.C.alcoda 的直接 coda 跳轉
           s.jumpCoda = false;
-          // 找 codaAnchors 裡第一個 ptim >= s.ptim 的降落點
-          var landCoda = null;
-          for (var i = 0; i < ctx.codaAnchors.length; i++) {
-            if (ctx.codaAnchors[i].ptim >= s.ptim) { landCoda = ctx.codaAnchors[i]; break; }
-          }
-          target = landCoda || ctx.tuneEndAnchor;
+          target = ctx.codaLandAnchors[0] || ctx.tuneEndAnchor;
         }
 
-      } else if (s._codaAnchor && s.jumpCoda) {
-        if (s._isLanding) {
-          s._isLanding = false;  // 降落標記：消耗後繼續往下播，不跳轉
-        } else {
+      } else if (s._codaDivAnchor) {
+        if (s.jumpCoda) {
+          // 分歧點觸發：跳往第一個 ptim > s.ptim 的 land anchor
           s.jumpCoda = false;
-          // 找下一個 coda anchor（ptim 嚴格大於自身）
-          var landCoda = null;
-          for (var i = 0; i < ctx.codaAnchors.length; i++) {
-            if (ctx.codaAnchors[i].ptim > s.ptim) { landCoda = ctx.codaAnchors[i]; break; }
+          var land = null;
+          for (var i = 0; i < ctx.codaLandAnchors.length; i++) {
+            if (ctx.codaLandAnchors[i].ptim > s.ptim) { land = ctx.codaLandAnchors[i]; break; }
           }
-          target = landCoda || ctx.tuneEndAnchor;
+          target = land || ctx.tuneEndAnchor;
         }
+        // jumpCoda=false → 第一次播放穿越（返回 null，walkAnchors 走 ts_next）
+
+      } else if (s._codaLandAnchor) {
+        // 降落點：純 land anchor，永遠穿越（返回 null，walkAnchors 走 ts_next）
+        target = null;
 
       } else if (s._fineAnchor && s.jumpFine) {
         s.jumpFine = false;
@@ -639,9 +659,10 @@
         fineAnchors: ctx.fineAnchors.map(function(a) {
           return { jumpFine: a.jumpFine };
         }),
-        codaAnchors: ctx.codaAnchors.map(function(a) {
-          return { jumpCoda: a.jumpCoda, _isLanding: a._isLanding };
+        codaDivAnchors: ctx.codaDivAnchors.map(function(a) {
+          return { jumpCoda: a.jumpCoda };
         })
+        // codaLandAnchors 無狀態，不需快照
       };
     },
 
@@ -674,10 +695,9 @@
         if (!snapshot.fineAnchors[i]) return;
         a.jumpFine = snapshot.fineAnchors[i].jumpFine;
       });
-      ctx.codaAnchors.forEach(function(a, i) {
-        if (!snapshot.codaAnchors[i]) return;
-        a.jumpCoda   = snapshot.codaAnchors[i].jumpCoda;
-        a._isLanding = snapshot.codaAnchors[i]._isLanding;
+      ctx.codaDivAnchors.forEach(function(a, i) {
+        if (!snapshot.codaDivAnchors[i]) return;
+        a.jumpCoda = snapshot.codaDivAnchors[i].jumpCoda;
       });
 
       delete _suspendSnapshots[tuneIdx];

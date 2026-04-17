@@ -525,10 +525,22 @@
             // ── [repCtrl] end ─────────────────────────────────────
             if(s2){po.stim+=(s.ptim-s2.ptim)/po.conf.speed
               s=s2
-              while(s&&!s.dur)
+              while(s&&!s.dur&&!s._anchor)  // anchor.dur=0，不能跳過
                 s=s.ts_next
               if(!s)
                 break
+              // ── [anchor-on-volta] volta 進房後落在 anchor ─────────
+              // coda / fine / jump anchor 可能在 volta 入口緊接著，
+              // 必須在發聲段前處理，不能讓外層 while 當成 SPACE 略過。
+              if(s._anchor){
+                var _wv=JumpEngine.walkAnchors(s,ctx,po.conf.speed)
+                if(!_wv.target){if(po.onend)setTimeout(po.onend,(t-now)*1000,po.repv);po.s_cur=s;return}
+                po.stim+=_wv.stimDelta
+                s=_wv.target
+                if(s._tuneStartAnchor||s._segnoAnchor){rep.onDCDSLanding()}
+                if(s==po.s_end){if(po.onend)setTimeout(po.onend,(t-now)*1000,po.repv);po.s_cur=s;return}
+                po.s_cur=s}
+              // ── [anchor-on-volta] end ────────────────────────────
               t=po.stim+s.ptim/po.conf.speed
               break}
             if(!s.part1){while(s.ts_next&&!s.ts_next.seqst){s=s.ts_next
