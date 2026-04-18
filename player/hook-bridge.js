@@ -473,10 +473,13 @@
               return}}
 
           // ── [B1] 起點落在 anchor 時走過並取得落點 ────────────────
+          // stimDelta===0：land anchor 穿越（播放路徑上的 segno 等標記），
+          //   po.stim 不變，直接繼續。
+          // stimDelta!==0：DC/DS 跳轉落點，po.stim 往前調。
           if(s._anchor){
             var _w1=JumpEngine.walkAnchors(s,ctx,po.conf.speed)
             if(!_w1.target){if(po.onend)po.onend(po.repv);return}
-            po.stim+=_w1.stimDelta
+            if(_w1.stimDelta!==0) po.stim+=_w1.stimDelta
             s=_w1.target
             // DC/DS 落在 tuneStart/segno：rep.onDCDSLanding()（慣例 A）。
             // coda/fine 方向前進，不重置。
@@ -533,10 +536,13 @@
               // ── [anchor-on-volta] volta 進房後落在 anchor ─────────
               // coda / fine / jump anchor 可能在 volta 入口緊接著，
               // 必須在發聲段前處理，不能讓外層 while 當成 SPACE 略過。
+              // stimDelta===0：land anchor 穿越，直接取 target，不截斷。
+              // stimDelta!==0：真正跳轉，更新 po.stim 後繼續（此處不 return，
+              //   由外層 case C.BAR 的 break 結束後重新計算 t）。
               if(s._anchor){
                 var _wv=JumpEngine.walkAnchors(s,ctx,po.conf.speed)
                 if(!_wv.target){if(po.onend)setTimeout(po.onend,(t-now)*1000,po.repv);po.s_cur=s;return}
-                po.stim+=_wv.stimDelta
+                if(_wv.stimDelta!==0) po.stim+=_wv.stimDelta
                 s=_wv.target
                 if(s._tuneStartAnchor||s._segnoAnchor){rep.onDCDSLanding()}
                 if(s==po.s_end){if(po.onend)setTimeout(po.onend,(t-now)*1000,po.repv);po.s_cur=s;return}
@@ -621,15 +627,20 @@
 
             // ── [B2] 中途遇到 anchor 時跳轉 ────────────────────────
             // anchor 統一插在音符之前（'before' 模式），內層 while 自然踩到。
-            // 跳轉後截斷本批次（return），避免後續音符排進同一 WebAudio batch。
-            // po.stim 用「前一個音符的結束時間」計算，不用外層 t
-            // （外層 t 在 BAR 推進後已不等於前一個音符的排程時間）。
+            // stimDelta === 0：land anchor 穿越（segno/fine/coda 路過標記），
+            //   不截斷批次，繼續在同一 WebAudio batch 內推進。
+            // stimDelta !== 0：真正的時間跳轉（D.S./D.C. 跳回），
+            //   截斷本批次（return），以正確時間基準重新排程。
             if(s._anchor){
               var _w2=JumpEngine.walkAnchors(s,ctx,po.conf.speed)
               if(!_w2.target){if(po.onend)setTimeout(po.onend,(t-now+d)*1000,po.repv);po.s_cur=s;return}
               s=_w2.target
               if(s._tuneStartAnchor||s._segnoAnchor){rep.onDCDSLanding()}
-              // 落點音符接在前一個音符結束後
+              if(_w2.stimDelta===0){
+                // land anchor 穿越：不截斷，繼續內層 while
+                if(!s.noplay)break
+                continue}
+              // 真正跳轉：落點音符接在前一個音符結束後，截斷批次重排
               var _bt=(_lastNoteT!==undefined)?_lastNoteT:t
               var _bd=(_lastNoteD!==undefined)?_lastNoteD:d
               po.stim=(_bt+_bd)-s.ptim/po.conf.speed

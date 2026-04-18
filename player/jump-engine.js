@@ -548,6 +548,12 @@
      *   由 HookBridge 的 play_cont 複本負責 po.stim += stimDelta，
      *   使 JumpEngine 對 po 完全零依賴。
      *
+     * stimDelta 語意（HookBridge 呼叫方必須區分）：
+     *   stimDelta === 0：純穿越路徑（segno / fine / coda land anchor 路過標記），
+     *                   播放時間基準不變，呼叫方不應截斷當前 WebAudio batch。
+     *   stimDelta !== 0：真正的時間跳轉（D.S. / D.C. 跳回），
+     *                   呼叫方必須截斷當前 batch，以新時間基準重新排程。
+     *
      * @param  {symbol}  s     - 起始 anchor symbol
      * @param  {object}  ctx   - jumpCtx
      * @param  {number}  speed - po.conf.speed（播放速度倍率）
