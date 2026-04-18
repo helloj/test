@@ -28,6 +28,7 @@
  *   <script src="snd-1.js"></script>
  *   <script src="jump-engine.js"></script>
  *   <script src="hook-bridge.js"></script>
+ *   <script src="state-manager.js"></script>
  *   <script src="abcplay-driver.js"></script>
  *   <script src="ui-controller.js"></script>
  *   <script src="ball-controller.js"></script>
@@ -335,8 +336,8 @@ function _assemble() {
 
   // ── [組裝 2] 初始化 UIController ──────────────────────────────────
   //
-  // UIController 透過存取器函式讀寫 AbcplayDriver 的私有狀態，
-  // 不直接引用變數名稱，維持模組邊界。
+  // loopMode / loopCount 已由 StateManager 統一管理，
+  // getContext() 不再回傳這些存取器；UIController 直接呼叫 StateManager API。
   //
   var _ctx = AbcplayDriver.getContext(CFG);
   UIController.init(Object.assign({ api: _playApi }, _ctx));

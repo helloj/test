@@ -82,15 +82,14 @@
      * cfg 欄位：
      *   api          {object}   – play.api（UI → Player 操作入口）
      *   getState     {function} – () → PlayState 整數
-     *   getLoopMode  {function} – () → loopMode 整數
-     *   setLoopMode  {function} – (v) → void
-     *   getLoopCount {function} – () → loopCount 整數
-     *   setLoopCount {function} – (v) → void
-     *   getSelx      {function} – () → selx 陣列引用
+     *   getSelx      {function} – () → selx 陣列引用（UI 高亮本地鏡像）
      *   getSelxSav   {function} – () → selx_sav 陣列引用
      *   getSpeed     {function} – () → currentSpeed 數值
      *   PlayState    {object}   – PlayState 枚舉
      *   CFG          {object}   – CFG 常數物件
+     *
+     * 注意：loopMode / loopCount 已改由全域 StateManager 管理，
+     *       不再透過 cfg 存取器傳入。
      */
     init: function (cfg) {
       _cfg = cfg;
@@ -147,6 +146,8 @@
         "#loop-icon{display:flex;align-items:center;justify-content:center;width:2.4em;height:2.4em;border:1px solid var(--muted);border-radius:4px;background:transparent;color:var(--muted);font-size:1.1rem;cursor:pointer;transition:background .12s,color .12s;line-height:1;padding:0;font-family:inherit;white-space:nowrap}",
         "#loop-icon:hover{background:rgba(139,58,58,0.10);color:var(--ink)}",
         "#loop-icon.active{background:rgba(139,58,58,0.15);color:var(--ink)}",
+        "#back-btn{display:flex;align-items:center;justify-content:center;width:2.4em;height:2.4em;border:1px solid var(--muted);border-radius:4px;background:transparent;color:var(--muted);font-size:1.1rem;cursor:pointer;transition:background .12s,color .12s;line-height:1;padding:0;font-family:inherit}",
+        "#back-btn:hover{background:rgba(139,58,58,0.10);color:var(--ink)}",
         "#dright{display:none}",
         ".abc-slot{display:block;width:100%;margin:0 auto}",
         ".abc-slot svg{display:block;width:100%;height:auto}",
@@ -227,6 +228,7 @@
         '  <div id="loopSegBtn">',
         '    <span id="loop-icon">' + CFG.ICON_NOLOOP + '</span>',
         '  </div>',
+        '  <button id="back-btn" title="Back to start">⏮</button>',
         '  <div class="fab-divider"></div>',
         '  <button id="speed-btn">' + CFG.ICON_SPEED + '</button>',
         '</div>',
@@ -335,10 +337,16 @@
       var selx = _cfg.getSelx();
       // 判斷是否需要同步 po.s_end（PLAYING 或 PAUSED 狀態皆需要）
       var isActive = (state === PlayState.PLAYING || state === PlayState.PAUSED);
+      var SM = root.StateManager;
 
       // ── Toggle：右鍵再點同一 B 點 → 清除 B 點 ──────────────────────
       if (v === selx[1]) {
         UIController.setsel(1, 0);
+        // ── [StateManager] 清除 B 點，自動禁用 AB 模式 ──
+        if (SM) {
+          SM.setSelectionB(0);
+          SM.setLoopMode(0);
+        }
         if (isActive) {
           // po.s_end = null → 播到曲尾；play.ei = null 同步
           // PAUSED 時 po.s_end 同步確保 resume 後不再受舊 B 點限制
@@ -352,6 +360,11 @@
 
       // ── 右鍵點新音符：設 B 點 ──────────────────────────────────────
       UIController.setsel(1, v);
+      // ── [StateManager] 設新 B 點，自動啟用 AB 模式 ──
+      if (SM) {
+        SM.setSelectionB(v);
+        if (SM.getState().playback.loopMode === 0) SM.setLoopMode(_cfg.CFG.LOOP_INFINITE);
+      }
       if (isActive) {
         // 即時調整終點：以目前 A 點（selx[0]）和新 B 點重算 ei
         // 與 play_tune 的 A/B 對調保護對齊：b < a 時 swap 後重算
@@ -643,8 +656,9 @@
      * 在 B 點變更時（清除或設新）呼叫，確保 UI 從第一圈重新顯示。
      */
     _resetLoopIfActive: function () {
-      if (_cfg.getLoopMode() !== 0) {
-        _cfg.setLoopCount(0);
+      // 改讀 StateManager（唯一真值源）
+      if (root.StateManager && root.StateManager.getState().playback.loopMode !== 0) {
+        root.StateManager.setLoopCount(0);
         UIController.refreshToggleLabel();
       }
     },
@@ -679,8 +693,10 @@
       if (!loopIcon) return;
       var PlayState = _cfg.PlayState;
       var CFG = _cfg.CFG;
-      var loopMode  = _cfg.getLoopMode();
-      var loopCount = _cfg.getLoopCount();
+      // 改讀 StateManager（唯一真值源）
+      var smState   = root.StateManager ? root.StateManager.getState() : null;
+      var loopMode  = smState ? smState.playback.loopMode  : 0;
+      var loopCount = smState ? smState.playback.loopCount : 0;
       var on = loopMode !== 0;
       loopIcon.classList.toggle('active', on);
       if (on && _cfg.getState() === PlayState.PLAYING) {
@@ -718,26 +734,112 @@
         }
       });
 
-      // ── 內部：啟用循環 ────────────────────────────────────────────
-      function setLoopMode() {
-        _cfg.setLoopMode(CFG.LOOP_INFINITE);
-        _cfg.setLoopCount(0);
+      // ── 內部：啟用循環（AB 模式）────────────────────────────────
+      // OFF → AB：
+      //   有 passage → 設 A/B 點，seekTo(A) 觸發 play_tune 感知新選段
+      //   無 passage → 純 loopMode ON（保留原有行為，不改 A/B）
+      function enableLoopAB() {
+        var SM = root.StateManager;
+        if (!SM) return;
+        var span = SM.getPassageSpan();
+        if (span) {
+          // 有 passage：設 A/B 並 seekTo(A) 重新起播，讓 play_tune 感知新 B 點
+          UIController.setsel(0, span.startIstart);
+          UIController.setsel(1, span.endIstart);
+          SM.setSelection(span.startIstart, span.endIstart);
+          SM.setLoopMode(CFG.LOOP_INFINITE);
+          SM.setLoopCount(0);
+          UIController._refreshLoopIcon();
+          // seekTo 走 play_tune 路徑，負責感知 B 點並重新起播
+          _cfg.api.seekTo(span.startIstart);
+        } else {
+          // 無 passage：純 loopMode toggle，不改 A/B 點
+          SM.setLoopMode(CFG.LOOP_INFINITE);
+          SM.setLoopCount(0);
+          UIController._refreshLoopIcon();
+        }
+      }
+
+      // ── 內部：關閉循環（OFF 模式）───────────────────────────────
+      // AB → OFF：清除 B 點，保留 A 點
+      function disableLoopAB() {
+        var SM = root.StateManager;
+        if (!SM) return;
+        // 取當前播放音符作為新 A 點（按下 loop 的那一刻就是新起點）
+        // 改讀 StateManager（唯一真值源）
+        var curNote = root.StateManager ? root.StateManager.getState().lastNote : 0;
+        // 先清 B 點高亮
+        UIController.setsel(1, 0);
+        SM.setSelectionB(0);
+        // 設新 A 點
+        if (curNote) {
+          UIController.setsel(0, curNote);
+          SM.setSelectionA(curNote);
+        } else {
+          UIController.setsel(0, 0);
+          SM.setSelectionA(0);
+        }
+        SM.setLoopMode(0);
+        SM.setLoopCount(0);
+        // 清空 passage，再把新 A 點推入，確保 pause 後色帶從新 A 點開始
+        if (root.PassageMarkPackage) {
+          root.PassageMarkPackage.onStop();   // 清空 _passage[]
+          if (curNote) root.PassageMarkPackage.onNoteOn(curNote);  // 推入新起點
+        }
+        SM.clear();
+        // PLAYING / PAUSED 中即時同步後端：清除 ei，讓當前播放繼續到曲尾
+        var state = _cfg.getState();
+        if (state === PlayState.PLAYING || state === PlayState.PAUSED) {
+          _cfg.api.setCurrentPoEnd(null);
+          _cfg.api.setPlayEi(null);
+        }
         UIController._refreshLoopIcon();
       }
 
-      // ── 內部：關閉循環 ────────────────────────────────────────────
-      function clearLoopMode() {
-        _cfg.setLoopMode(0);
-        _cfg.setLoopCount(0);
-        UIController._refreshLoopIcon();
-      }
-
-      // ── loop-icon click：直接 toggle loopMode ─────────────────────
+      // ── loop-icon click：依 loopMode 和 PlayState 決定行為 ──────
+      // PLAYING + AB 模式：允許取消 AB → 直線播到曲尾
+      // PLAYING + OFF 模式：禁用（無 passage 可設 A/B）
+      // PAUSED / IDLE：正常 toggle
       loopIcon.addEventListener('click', function (e) {
         e.stopPropagation();
-        if (_cfg.getLoopMode() !== 0) clearLoopMode();
-        else setLoopMode();
+        var SM = root.StateManager;
+        if (!SM) return;
+        var isPlaying = _cfg.getState() === PlayState.PLAYING;
+        var loopOn = SM.getState().playback.loopMode !== 0;
+        // PLAYING + OFF：無意義，禁用
+        if (isPlaying && !loopOn) return;
+        if (loopOn) {
+          disableLoopAB();
+        } else {
+          enableLoopAB();
+        }
       });
+
+      // ── Back 按鈕 click：跳回起點重播，不改 A/B 點和 loopMode ──
+      // seekTo 本身已處理 A 點高亮更新與 keepB 判斷，Back 不需要額外操作。
+      var backBtn = document.getElementById('back-btn');
+      if (backBtn) {
+        backBtn.addEventListener('click', function (e) {
+          e.stopPropagation();
+          var SM = root.StateManager;
+          if (!SM) return;
+          var state = _cfg.getState();
+          // PAUSED 或 PLAYING 時才操作
+          if (state !== PlayState.PAUSED && state !== PlayState.PLAYING) return;
+          // 先 flush _passage → StateManager，確保 PLAYING 中也能取到起點
+          if (root.PassageMarkPackage) root.PassageMarkPackage.flushPassage();
+          var span = SM.getPassageSpan();
+          if (!span) return;  // 無任何播放記錄，不操作
+
+          // PLAYING：先 stop，再 seekTo(起點)
+          // PAUSED ：直接 seekTo（內部處理非同步序列）
+          // A/B 點、loopMode 全部不動，seekTo 自帶 keepB 判斷
+          if (state === PlayState.PLAYING) {
+            _cfg.api.stop();
+          }
+          _cfg.api.seekTo(span.startIstart);
+        });
+      }
     },
 
     /**

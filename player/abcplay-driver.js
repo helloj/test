@@ -78,6 +78,7 @@
  *   abc2svg        – symbol 結構、abc2svg.C 常數、abc2svg._current_po
  *   JumpEngine     – resetAllContexts / buildContextForTune / suspendPlayback /
  *                    resumePlayback（jump-engine.js）
+ *   StateManager   – AB Loop 中心狀態（state-manager.js）
  *   UIController   – setsel（ui-controller.js，透過 init cfg 注入）
  *
  * HTML 載入順序：
@@ -85,6 +86,7 @@
  *   <script src="snd-1.js"></script>
  *   <script src="jump-engine.js"></script>
  *   <script src="hook-bridge.js"></script>
+ *   <script src="state-manager.js"></script>    ← 必須在 abcplay-driver.js 之前
  *   <script src="abcplay-driver.js"></script>   ← 必須在 ui-controller.js 之前
  *   <script src="ui-controller.js"></script>
  *   <script src="loader.js"></script>
@@ -392,6 +394,8 @@
   function pipe_curNotesOn(i) {
     play.lastNote = i;
     play.curNotes.add(i);
+    // ── [StateManager] 同步 lastNote 到中心狀態 ──
+    if (root.StateManager) root.StateManager.setLastNote(i);
   }
 
   /** [stopping-guard] STOPPING 過渡期攔截 on，避免 stop 後畫面殘留高亮。 */
@@ -582,22 +586,68 @@
         _passage.push(i);
       },
 
-      /** pause：按行分組，繪製螢光筆色帶。 */
-      onPause: function () {
-        _buildBands();
+      /**
+       * flushPassage() - 將 _passage 即時刷入 StateManager
+       *
+       * 抽出供 onPause 和外部（Back 按鈕）共用，避免重複邏輯。
+       * PLAYING 中隨時可呼叫，不觸發色帶繪製。
+       */
+      flushPassage: function () {
+        if (_passage.length > 0 && root.StateManager) {
+          root.StateManager.setPassage(
+            _passage[0],
+            _passage[_passage.length - 1],
+            _passage
+          );
+        }
       },
 
-      /** resume（同步區）：移除色帶並清空，確保 ac.resume() 前已處理完畢。 */
+      /**
+       * trimBefore(istart) - 移除 _passage 中 istart 之前的所有記錄
+       *
+       * 供 disableLoopAB 呼叫：取消 AB 後把 A 移到舊 B 點，
+       * _passage 也同步截斷，確保 pause 時色帶從新 A 點（舊 B）開始。
+       *
+       * @param {number} istart - 保留起點（含）
+       */
+      trimBefore: function (istart) {
+        // 優先精確比對；找不到時找第一個 >= istart 的位置截斷，
+        // 避免 B 點不在 _passage[] 中時誤清空整個記錄。
+        var idx = _passage.indexOf(istart);
+        if (idx < 0) {
+          for (var i = 0; i < _passage.length; i++) {
+            if (_passage[i] >= istart) { idx = i; break; }
+          }
+        }
+        if (idx > 0)      _passage = _passage.slice(idx);
+        else if (idx < 0) _passage = [];  // istart 超過所有記錄，清空
+        // idx === 0：已在最前，不需要截斷
+      },
+
+      /** pause：按行分組，繪製螢光筆色帶；同步 passage 到 StateManager。 */
+      onPause: function () {
+        _buildBands();
+        // ── [StateManager] 記錄本次播放會話到中心狀態 ──
+        PassageMarkPackage.flushPassage();
+      },
+
+      /** resume（同步區）：移除色帶並清空，確保 ac.resume() 前已處理完畢。
+       *  同步清除 StateManager 的 passage（Resume 後 passage 無意義）。 */
       onResume: function () {
         _removeBands();
         _passage = [];
+        // ── [StateManager] 清除 passage，保留 selection / playback ──
+        if (root.StateManager) root.StateManager.clear();
       },
 
       /** stop：清空記錄（色帶由 clearAllHighlight 路徑呼叫 onResume 前已清，
-       *         此處只清 _passage，防止 stop 後殘留舊紀錄影響下次播放）。 */
+       *         此處只清 _passage，防止 stop 後殘留舊紀錄影響下次播放）。
+       *  同步清除 StateManager 的 passage。 */
       onStop: function () {
         _removeBands();
         _passage = [];
+        // ── [StateManager] 清除 passage ──
+        if (root.StateManager) root.StateManager.clear();
       },
 
       /** reposition：scroll / resize 時重新定位所有顯示中的色帶。 */
@@ -615,7 +665,8 @@
           }
           _applyBandStyle(entry.div, xMin, yTop, xMax - xMin, h);
         }
-      }
+      },
+
     };
   }());
 
@@ -824,14 +875,20 @@
 
     // ── [狀態機] PLAYING 狀態：自然結束，檢查循環 ──
     if (isState(PlayState.PLAYING)) {
-      // 循環模式：直接重播（loopMode !== 0 即啟用，無次數上限）
-      if (loopMode !== 0) {
-        ++loopCount;
+      // 循環模式：從 StateManager 讀取（StateManager 為唯一真值源）
+      var smState = root.StateManager ? root.StateManager.getState() : null;
+      var curLoopMode = smState ? smState.playback.loopMode : loopMode;
+      if (curLoopMode !== 0) {
+        var curLoopCount = smState ? smState.playback.loopCount : loopCount;
+        // 同步遞增 StateManager 與本地鏡像
+        if (root.StateManager) root.StateManager.setLoopCount(curLoopCount + 1);
+        loopCount = curLoopCount + 1;
         play.onStateChange();
         playStart(play.si, play.ei);
         return;  // 保持 PLAYING 狀態
       }
       loopCount = 0;  // 自然結束才重置計數
+      if (root.StateManager) root.StateManager.setLoopCount(0);
     }
 
     // ── [狀態機] STOPPING 狀態：用戶主動停止，不重置 loopCount ──
@@ -877,6 +934,12 @@
     // play.si 提前更新：即使 play_tune 因後端未載入而提早 return，
     // 之後按 Play 按鈕仍會從此音符起播，而非回到上次位置。
     play.si = get_se(v);
+
+    // ── [StateManager] 同步 A/B 點到中心狀態 ──────────────────────
+    if (root.StateManager) {
+      root.StateManager.setSelectionA(v);
+      if (!keepB) root.StateManager.setSelectionB(0);
+    }
 
     // ── [狀態機] paused 狀態：ac.resume() → stop → play_tune ───────
     if (isState(PlayState.PAUSED)) {
@@ -937,7 +1000,12 @@
     // ── [狀態機] IDLE 狀態：開始新播放 ──
     addTunes();
 
-    var a = selx[0], b = selx[1], si, ei;
+    // ── [StateManager] 優先從中心狀態讀取 A/B 點；fallback 到 selx ──
+    var smState = root.StateManager ? root.StateManager.getState() : null;
+    var a = smState ? smState.selection.A : selx[0];
+    var b = smState ? smState.selection.B : selx[1];
+
+    var si, ei;
 
     // ── 決定起點 ──────────────────────────────────────────────────
     if (a) {
@@ -962,6 +1030,7 @@
     // ── 狀態更新 ──────────────────────────────────────────────────
     play.si = si; play.ei = ei;
     play.repv = 0; loopCount = 0;
+    if (root.StateManager) root.StateManager.setLoopCount(0);
     selx_sav[0] = selx[0]; selx_sav[1] = selx[1];
     play.curNotes = new Set(); play.lastNote = 0;
     playStart(si, ei);
@@ -1092,8 +1161,21 @@
     /**
      * getContext(CFG) - 取得給 UIController.init 用的狀態上下文
      *
-     * 回傳含 getState / getLoopMode / setLoopMode 等存取器的 cfg 物件，
-     * UIController 透過這些存取器讀寫 Driver 的私有狀態，不直接引用變數名稱。
+     * 自 StateManager 整合後，loopMode / loopCount 已由 StateManager 統一管理。
+     * UIController 應改為直接呼叫 StateManager.getState() / setLoopMode() 等 API。
+     *
+     * 保留：
+     *   getState     – PlayState 仍屬 Driver 私有（非 AB Loop 狀態）
+     *   getSelx      – selx 是 UI 高亮的本地鏡像，setsel 需要直接寫入
+     *   getSelxSav   – play_tune 快照，onPlaybackEnd 還原用
+     *   getSpeed     – currentSpeed 屬 Driver 私有
+     *   getCurNotes  – 多聲部計數屬 Driver 私有
+     *   clearCurNotes– 同上
+     *   PlayState    – 枚舉常數
+     *   CFG          – UI 圖示 / 速度常數
+     *
+     * 已移除（改用 StateManager API）：
+     *   getLoopMode / setLoopMode / getLoopCount / setLoopCount
      *
      * @param {object} CFG – 播放常數（ICON_*、SPEED_* 等，由 loader.js 傳入）
      * @returns {object}
@@ -1101,10 +1183,6 @@
     getContext: function (CFG) {
       return {
         getState:     function ()  { return play.state; },
-        getLoopMode:  function ()  { return loopMode; },
-        setLoopMode:  function (v) { loopMode = v; },
-        getLoopCount: function ()  { return loopCount; },
-        setLoopCount: function (v) { loopCount = v; },
         getSelx:      function ()  { return selx; },       // 回傳陣列引用，setsel 可直接寫入
         getSelxSav:   function ()  { return selx_sav; },
         getSpeed:     function ()  { return currentSpeed; },
