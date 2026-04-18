@@ -501,7 +501,6 @@
           // po._onnoteTimouts 存下剩餘 delay 供 resume 重排。
           po._onnoteTimouts=[]
           // ── [pause:reset-timouts] end ────────────────────────────
-          var _lastNoteT, _lastNoteD;  // 記錄最後一個發聲音符的 t/d，供 [B2] 使用
 
           while(1){switch(s.type){case C.BAR:s2=null
             // ── [repCtrl] case C.BAR repeat/volta 判斷 ───────────
@@ -574,11 +573,6 @@
             case C.NOTE:case C.REST:if(!po.p_v[s.v])
               set_ctrl(po,s,t)
               d=s.pdur/po.conf.speed
-              // ── [last-note] 記錄最後一個發聲音符的 t 和 d ────────────
-              // [B2] 跳轉時需要用「前一個音符的結束時間」計算 po.stim，
-              // 不能用外層 while 的 t（BAR 推進後 t 已不是音符時間）。
-              var _lastNoteT=t, _lastNoteD=d;
-              // ── [last-note] end ───────────────────────────────────────
               if(s.type==C.NOTE){for(m=0;m<=s.nhd;m++){note=s.notes[m]
                 if(note.tie_s||note.noplay)
                   continue
@@ -631,6 +625,12 @@
             //   不截斷批次，繼續在同一 WebAudio batch 內推進。
             // stimDelta !== 0：真正的時間跳轉（D.S./D.C. 跳回），
             //   截斷本批次（return），以正確時間基準重新排程。
+            //
+            // po.stim 計算（多聲部安全）：
+            //   stimDelta = (jump.ptim - land.ptim) / speed > 0（跳回代表 ptim 縮小）
+            //   po.stim += stimDelta 等同 [B1] 做法，讓 t = po.stim + s.ptim 對齊
+            //   前一個已排程音符的排程時間 t_prev，不依賴 _lastNoteT/D，多聲部安全。
+            //   setTimeout delay = (t_new - now) * 1000 - 300，與外層排程邏輯一致。
             if(s._anchor){
               var _w2=JumpEngine.walkAnchors(s,ctx,po.conf.speed)
               if(!_w2.target){if(po.onend)setTimeout(po.onend,(t-now+d)*1000,po.repv);po.s_cur=s;return}
@@ -640,14 +640,13 @@
                 // land anchor 穿越：不截斷，繼續內層 while
                 if(!s.noplay)break
                 continue}
-              // 真正跳轉：落點音符接在前一個音符結束後，截斷批次重排
-              var _bt=(_lastNoteT!==undefined)?_lastNoteT:t
-              var _bd=(_lastNoteD!==undefined)?_lastNoteD:d
-              po.stim=(_bt+_bd)-s.ptim/po.conf.speed
+              // 真正跳轉：多聲部安全的 po.stim，截斷批次重排
+              po.stim+=_w2.stimDelta
+              var _nextT=po.stim+s.ptim/po.conf.speed
               po.s_cur=s
-              po._nextT=_bt+_bd
+              po._nextT=_nextT
               po._play_cont=play_cont
-              po.timouts.push(setTimeout(play_cont,_bd*1000-300,po))
+              po.timouts.push(setTimeout(play_cont,(_nextT-now)*1000-300,po))
               return}
             // ── [B2] end ─────────────────────────────────────────────
 
