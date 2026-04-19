@@ -579,9 +579,24 @@
     }
 
     return {
-      /** 將 i 加入樂句記錄，去重，超限移除最舊。 */
+      /**
+       * 將 i 加入樂句記錄，去重，超限移除最舊。
+       *
+       * _passage 為空表示新一段播放剛開始（resume 後 onResume 已清空）：
+       * 非 AB loop mode 時，將第一個進來的音符設為新 A 點，
+       * 確保 A 點 / passage mark 左緣 / Back 按鈕跳點三者對齊。
+       */
       onNoteOn: function (i) {
         if (_passage.indexOf(i) !== -1) return;
+        // ── [A點同步] resume 後第一音：非 AB mode 才更新 A 點 ──
+        if (_passage.length === 0) {
+          var smState = root.StateManager ? root.StateManager.getState() : null;
+          var isLoopAB = smState && smState.playback.loopMode !== 0;
+          if (!isLoopAB) {
+            setsel(0, i);
+            if (root.StateManager) root.StateManager.setSelectionA(i);
+          }
+        }
         if (_passage.length >= PASSAGE_MAX) _passage.shift();
         _passage.push(i);
       },
@@ -624,11 +639,25 @@
         // idx === 0：已在最前，不需要截斷
       },
 
-      /** pause：按行分組，繪製螢光筆色帶；同步 passage 到 StateManager。 */
+      /**
+       * pause：按行分組，繪製螢光筆色帶；同步 passage 到 StateManager。
+       *
+       * 非 AB loop mode 且 _passage[0] 存在時，將 A 點刷新到 passage 起點，
+       * 確保孤立綠色塊不會出現在色帶之外。
+       */
       onPause: function () {
         _buildBands();
         // ── [StateManager] 記錄本次播放會話到中心狀態 ──
         PassageMarkPackage.flushPassage();
+        // ── [A點同步] pause 時對齊色帶左緣：非 AB mode 才更新 ──
+        if (_passage.length > 0) {
+          var smState = root.StateManager ? root.StateManager.getState() : null;
+          var isLoopAB = smState && smState.playback.loopMode !== 0;
+          if (!isLoopAB) {
+            setsel(0, _passage[0]);
+            if (root.StateManager) root.StateManager.setSelectionA(_passage[0]);
+          }
+        }
       },
 
       /** resume（同步區）：移除色帶並清空，確保 ac.resume() 前已處理完畢。
