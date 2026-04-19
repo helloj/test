@@ -65,7 +65,7 @@
   var PLAYLINE_POOL_SIZE = 4;
   var _linePool        = [];           // Array<div>（空閒）
   var _lineMap         = new Map();    // Map<istart, {div, elt}>（使用中）
-  var _highlightWidth  = 3;         // null=fill | number=line px，預設 fill
+  var _highlightWidth  = null;         // null=fill | number=line px，預設 fill
 
   // ── 公開物件 ──────────────────────────────────────────────────────
   var UIController = {
@@ -140,8 +140,6 @@
         /* fab-toolbar：水平浮動，固定在右上角 */
         "#fab-toolbar{position:fixed;top:16px;right:4.0rem;z-index:50;display:flex;flex-direction:row;align-items:center;gap:6px;background:var(--panel);border:1px solid var(--muted);border-radius:8px;padding:6px 8px;box-shadow:0 4px 16px rgba(139,58,58,0.15);user-select:none}",
         ".fab-divider{width:1px;height:1.8em;background:var(--muted);opacity:.4;margin:0 2px}",
-        "#play-pause-btn{display:flex;align-items:center;justify-content:center;width:2.4em;height:2.4em;border:1px solid var(--muted);border-radius:4px;background:transparent;color:var(--muted);font-size:1.1rem;cursor:pointer;transition:background .12s,color .12s;line-height:1;padding:0;font-family:inherit}",
-        "#play-pause-btn:hover{background:rgba(139,58,58,0.10);color:var(--ink)}",
         "#loopSegBtn{position:relative;display:flex;align-items:center}",
         "#loop-icon{display:flex;align-items:center;justify-content:center;width:2.4em;height:2.4em;border:1px solid var(--muted);border-radius:4px;background:transparent;color:var(--muted);font-size:1.1rem;cursor:pointer;transition:background .12s,color .12s;line-height:1;padding:0;font-family:inherit;white-space:nowrap}",
         "#loop-icon:hover{background:rgba(139,58,58,0.10);color:var(--ink)}",
@@ -161,7 +159,7 @@
         /* left:0;top:0 固定在原點，實際位置完全由 transform:translate 控制        */
         /* will-change:transform 提示瀏覽器提升到獨立 GPU layer，定位零 Layout     */
         /* width/height 由 _positionLine 動態設定，與對應 .abcr rect 尺寸一致     */
-        ".playline{position:fixed;left:0;top:0;background:#8b3a3a;opacity:0;pointer-events:none;z-index:20;border-radius:1px;will-change:transform}",
+        ".playline{position:fixed;left:0;top:0;background:#40d0ff;opacity:0;pointer-events:none;z-index:20;border-radius:1px;will-change:transform}",
         ".playline.on{opacity:0.4}",
         /* [passageMark] 樂句螢光筆色帶：pause 時顯示，覆蓋播放走過的樂句範圍  */
         /* 每行一個 div，x_min~x_max 為該行所有音符的水平跨度                   */
@@ -178,7 +176,7 @@
         "#speed-handle{width:36px;height:4px;border-radius:2px;background:var(--muted);opacity:.5;margin:0 auto 16px}",
         "#speed-display{text-align:center;font-size:1.8rem;font-weight:700;color:var(--ink);margin-bottom:20px;letter-spacing:.02em}",
         "#speed-slider-row{display:flex;align-items:center;gap:14px;margin:0 20px 18px}",
-        "#speed-minus,#speed-plus{flex-shrink:0;width:2.2em;height:2.2em;border:1px solid var(--muted);border-radius:50%;background:transparent;color:var(--ink);font-size:1.1rem;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .12s}",
+        "#speed-minus,#speed-plus{flex-shrink:0;width:2.2em;height:2.2em;border:1px solid var(--muted);border-radius:50%;background:transparent;color:var(--ink);font-size:1.2rem;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .12s}",
         "#speed-minus:hover,#speed-plus:hover{background:rgba(139,58,58,0.12)}",
         "#speed-slider{flex:1;-webkit-appearance:none;appearance:none;height:4px;border-radius:2px;background:linear-gradient(to right,var(--accent) var(--pct,50%),var(--muted) var(--pct,50%));outline:none;cursor:pointer}",
         "#speed-slider::-webkit-slider-thumb{-webkit-appearance:none;width:22px;height:22px;border-radius:50%;background:var(--accent);cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.25)}",
@@ -223,13 +221,11 @@
       var body = document.body;
       body.insertAdjacentHTML('afterbegin', [
         '<div id="fab-toolbar">',
-        '  <button id="play-pause-btn">' + CFG.ICON_PLAY + '</button>',
+        '  <button id="back-btn" title="Back to start">⏮</button>',
         '  <div class="fab-divider"></div>',
         '  <div id="loopSegBtn">',
         '    <span id="loop-icon">' + CFG.ICON_NOLOOP + '</span>',
         '  </div>',
-        '  <button id="back-btn" title="Back to start">⏮</button>',
-        '  <div class="fab-divider"></div>',
         '  <button id="speed-btn">' + CFG.ICON_SPEED + '</button>',
         '</div>',
         '<div id="errbanner"></div>',
@@ -395,11 +391,10 @@
     /**
      * refreshToggleLabel()
      *
-     * 統一刷新播放按鈕圖示與循環圖示。
+     * 統一刷新循環圖示。
      * 由 getCallbacks().onStateChange 回傳，填入 play.onStateChange。
      */
     refreshToggleLabel: function () {
-      UIController._refreshPlayPauseBtn();
       UIController._refreshLoopIcon();
     },
 
@@ -664,25 +659,6 @@
     },
 
     /**
-     * _refreshPlayPauseBtn()
-     *
-     * 根據目前 PlayState 更新播放/暫停按鈕的圖示。
-     */
-    _refreshPlayPauseBtn: function () {
-      var ppBtn = document.getElementById('play-pause-btn');
-      if (!ppBtn) return;
-      var PlayState = _cfg.PlayState;
-      var CFG = _cfg.CFG;
-      var icon;
-      switch (_cfg.getState()) {
-        case PlayState.PAUSED:  icon = CFG.ICON_RESUME; break;
-        case PlayState.PLAYING: icon = CFG.ICON_PAUSE;  break;
-        default:                icon = CFG.ICON_PLAY;   // IDLE / STOPPING
-      }
-      ppBtn.textContent = icon;
-    },
-
-    /**
      * _refreshLoopIcon()
      *
      * 根據 loopMode / loopCount / PlayState 更新循環圖示。
@@ -715,24 +691,11 @@
      */
     _setupButtons: function () {
       var loopIcon = document.getElementById('loop-icon');
-      var ppBtn    = document.getElementById('play-pause-btn');
       var PlayState = _cfg.PlayState;
       var CFG = _cfg.CFG;
 
-      // ── Play/Pause 按鈕 click ──────────────────────────────────────
-      ppBtn.addEventListener('click', function () {
-        var state = _cfg.getState();
-        if (state === PlayState.PAUSED) {
-          // paused 狀態：resume（直接接續，不走 play_next）
-          _cfg.api.resume();
-        } else if (state === PlayState.PLAYING) {
-          // playing 狀態：pause（凍結 ac，保留 po）
-          _cfg.api.pause();
-        } else {
-          // idle 狀態：play_tune() 統一感知 A/B 點與 play.si
-          _cfg.api.play();
-        }
-      });
+      // ── 播放控制：點擊樂譜空白區域會觸發 play / pause / resume ──
+      // 按 Back 鈕 ⏮ 可跳回選段開始（見下方 Back 按鈕邏輯）
 
       // ── 內部：啟用循環（AB 模式）────────────────────────────────
       // OFF → AB：
