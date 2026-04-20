@@ -146,6 +146,7 @@
   var selx         = [0, 0];           // [A點 istart, B點 istart]（0 表示未設）
   var selx_sav     = [];               // play_tune 時快照，供 onPlaybackEnd 還原
   var currentSpeed = 1.0;              // 當前播放速度倍率（init 後由 CFG.SPEED_DEFAULT 覆寫）
+  var _pendingRepState = null;         // seekTo 時保留的 { repv, repn }，playStart 傳給 HookBridge
 
   var play = {
     state:   PlayState.IDLE,
@@ -321,6 +322,75 @@
       if (h !== tuneTail) { s = s.ts_prev; break; }
     }
     return next_playable(s);
+  }
+
+  /**
+   * getVoltaState(sym) - 判斷 sym 是否在 volta 房內，回傳對應的 repState
+   *
+   * Method 1 (rep_s)：往 ts_prev 找有 rep_s 的 BAR，從 rep_s[N] 往 ts_next 確認
+   *   sym 是否在該 volta 內。rep_s 由 play_start 初始化，僅在曾播放後才存在。
+   *   修正：rep_s[N] 本身若為 rep_p bar（如 :|2 bar），從 ts_next 開始掃描。
+   *
+   * Method 2 (text)：往 ts_prev 找有 text（volta 標記）且 rbstop===2 的 BAR，
+   *   再往 ts_next 確認 sym 在此 bar 與下一個 rbstop===2 bar 之間。
+   *   text 由 abc2svg parser 設定，從 IDLE 狀態即可使用，適用 ||1/:|2 記法。
+   *
+   * @param  {symbol}      sym
+   * @returns {{ repv, repn } | null}
+   *   在 volta N → { repv: N+1, repn: false }（enterVolta 進房即 repv++，
+   *   故「在 volta N 中」時 po.repv === N+1）；否則 null
+   */
+  function getVoltaState(sym) {
+    if (!sym) return null;
+    var C = abc2svg.C;
+    var s = sym.ts_prev;
+    var bwSteps = 0;
+    while (s) {
+      bwSteps++;
+      if (s.type === C.BAR) {
+        // ── Method 1: rep_s（play_start 後可用）───────────────────
+        if (s.rep_s) {
+          for (var n = 1; n < s.rep_s.length; n++) {
+            if (!s.rep_s[n]) continue;
+            var nextVoltaStart = s.rep_s[n + 1] || null;
+            var entryBar = s.rep_s[n];
+            // 若 rep_s[N] 本身是 rep_p bar（如 :|2），則從 ts_next 開始掃，
+            // 否則掃描會立即被 rep_p 條件中斷。
+            var cur = (entryBar.type === C.BAR && entryBar.rep_p)
+                      ? entryBar.ts_next : entryBar;
+            while (cur) {
+              if (cur === sym) return { repv: n + 1, repn: false };
+              if (nextVoltaStart && cur === nextVoltaStart) break;
+              if (cur.type === C.BAR && cur.rep_p) break;
+              cur = cur.ts_next;
+            }
+          }
+          return null;
+        }
+        // ── Method 2: text（IDLE 可用；處理 ||1/:|2 記法）─────────
+        if (s.text && s.rbstop === 2) {
+          var n2 = parseInt(s.text, 10);
+          if (n2 >= 1) {
+            // 往 ts_next 確認 sym 在此 bar 與下一個 rbstop=2 bar 之間
+            var fwd = s.ts_next;
+            var fwdLimit = 5000;
+            while (fwd && fwdLimit-- > 0) {
+              if (fwd === sym) return { repv: n2 + 1, repn: false };
+              if (fwd.type === C.BAR && fwd.rbstop === 2) break;
+              fwd = fwd.ts_next;
+            }
+          }
+        }
+        // ── 遇到裸 |:（無 text、無 rep_s）→ 已超出 volta 範圍 ────
+        if (!s.text && !s.rep_s &&
+            s.bar_type && s.bar_type.slice(-1) === ':' && s.bar_type[0] !== ':') {
+          return null;
+        }
+      }
+      if (bwSteps > 50000) break;
+      s = s.ts_prev;
+    }
+    return null;
   }
 
   /** first_sym() - 取 syms 中第一個非空 symbol（曲首起播點） */
@@ -512,7 +582,7 @@
    *           移除 ui-controller.js 的 scroll listener 與 passage-band CSS 即可。
    */
   var PassageMarkPackage = (function () {
-    var PASSAGE_MAX = 30;
+    var PASSAGE_MAX = 20;
     var BAND_H      = 25;
     var _passage  = [];    // istart 陣列，index 0 = 最舊
     var _bandDivs = [];    // 目前顯示中的 .passage-band div（pause 期間）
@@ -996,6 +1066,30 @@
    *   ac 仍 suspended，第一次 click 無聲。
    */
   function seekTo(v) {
+    // ── repeat 進度快照（在任何狀態切換前決定）────────────────────
+    // 優先：目標在 volta N 內 → 計算型 repv=N+1（確保彈回後進 N+1 房）。
+    // 否則：保留舊 po 的 repv/repn（Back 按鈕場景：Back 到段前後直接進 N+1 房）。
+    var _voltaRepState = getVoltaState(get_se(v));
+    if (_voltaRepState) {
+      // 目標在 volta N 內 → 計算型，彈回後進 N+1 房
+      _pendingRepState = _voltaRepState;
+    } else {
+      var _oldPo = abc2svg._current_po;
+      var _oldRepCtrl = _oldPo && _oldPo.repCtrl;
+      if (_oldRepCtrl) {
+        var _curVolta = getVoltaState(_oldPo.s_cur);
+        if (_curVolta) {
+          // 當前在 volta N 內尚未結束（Back 中途離開）→ repv=N，下次重進 volta N
+          _pendingRepState = { repv: _curVolta.repv - 1, repn: false };
+        } else {
+          // 當前不在任何 volta 內（volta 已完成或在主旋律）→ 保留舊進度
+          _pendingRepState = { repv: _oldRepCtrl.repv, repn: _oldRepCtrl.repn };
+        }
+      } else {
+        _pendingRepState = null;
+      }
+    }
+
     // ── B 點保留判斷（在任何狀態切換前先決定） ────────────────────
     var keepB = selx[1] && v < selx[1];
     setsel(0, v);
@@ -1134,6 +1228,16 @@
     // 在下次觸發時自動識別並靜默退出，不干擾新播放。
     if (root.HookBridge) root.HookBridge.newGeneration();
     // ── [GEN] end ─────────────────────────────────────────────────
+
+    // ── [seekTo:repState] seekTo 保留 repeat 進度 ─────────────────
+    // seekTo 已將舊 repv/repn 存入 _pendingRepState；
+    // 傳給 HookBridge，play_next 入口注入新 po，repCtrl 以此重建。
+    // 非 seekTo 路徑 _pendingRepState=null，HookBridge 不注入。
+    if (_pendingRepState && root.HookBridge) {
+      root.HookBridge.pendingRepState = _pendingRepState;
+      _pendingRepState = null;
+    }
+    // ── [seekTo:repState] end ─────────────────────────────────────
 
     // ── [狀態機] 狀態轉換：IDLE → PLAYING ──
     setState(PlayState.PLAYING, 'playStart');

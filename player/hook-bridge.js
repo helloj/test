@@ -338,6 +338,15 @@
     repCtrl: null,
 
     /**
+     * pendingRepState
+     *
+     * seekTo 呼叫時由 abcplay-driver 設定 { repv, repn }，
+     * play_next 入口讀取後注入新 po，再清為 null。
+     * 非 seekTo 起播時保持 null，play_next 不注入。
+     */
+    pendingRepState: null,
+
+    /**
      * newGeneration()
      *
      * 遞增播放世代號。
@@ -706,6 +715,14 @@
         po.p_v=[]
         if(!po.repv)
           po.repv=1
+        // ── [repCtrl] seekTo 保留 repeat 進度 ────────────────────
+        // seekTo 前由 abcplay-driver 設定 pendingRepState；
+        // 注入後 _createRepeatCtrl 以此為初始值重建，repv/repn 不丟失。
+        if (HookBridge.pendingRepState) {
+          po.repv = HookBridge.pendingRepState.repv;
+          po.repn = HookBridge.pendingRepState.repn;
+          HookBridge.pendingRepState = null;
+        }
         // ── [repCtrl] 強制重建，每首曲子重新初始化 ──────────────
         po.repCtrl = null;
         // ── [repCtrl] end ─────────────────────────────────────────
