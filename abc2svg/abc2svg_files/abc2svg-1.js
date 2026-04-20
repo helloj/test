@@ -118,7 +118,7 @@ function syntax(sev,msg,a1,a2,a3,a4){var s={fname:parse.fname,istart:parse.istar
 error(sev,s,msg,a1,a2,a3,a4)}
 function js_inject(js){eval('"use strict";\n'+js)}
 var dd_tb={},a_de,cross
-var decos={dot:"0 stc 6 .7 1",tenuto:"0 emb 6 4 3",slide:"1 sld 5,5 7 1",arpeggio:"2 arp 12 10 3",roll:"3 roll 5,4 5 6",lowermordent:"3 lmrd 6,5 4 6",uppermordent:"3 umrd 6,5 4 6",trill:"3 trl 14 5 8",upbow:"3 upb 12,2 3 7",downbow:"3 dnb 8,2 4 6",gmark:"3 grm 7 4 6",wedge:"0 wedge 8 1.5 1",longphrase:"5 lphr 0 1 16",mediumphrase:"5 mphr 0 1 16",shortphrase:"5 sphr 0 1 16",turnx:"3 turnx 7,2.5 5 6",invertedturn:"3 turn 7,2 5 6",plus:"3 dplus 8,2 2 4","+":"3 dplus 8,2 2 4",">":"5 accent 3.5,3.5 4 4",accent:"5 accent 3.5,3.5 4 4",emphasis:"5 accent 3.5,3.5 4 4",marcato:"3 marcato 9 5 5","^":"3 marcato 9 5 5",mordent:"3 lmrd 6,5 4 6",open:"3 opend 8 3 3",snap:"3 snap 10 3 3",thumb:"3 thumb 10 3 3",turn:"3 turn 7,2.5 5 6","trill(":"5 ltr 8 0 0","trill)":"5 ltr 8 0 0","8va(":"5 8va 12 6 6","8va)":"5 8va 12 6 6","8vb(":"4 8vb 10,5 6 6","8vb)":"4 8vb 10,5 6 6","15ma(":"5 15ma 12 9 9","15ma)":"5 15ma 12 9 9","15mb(":"4 15mb 12 9 9","15mb)":"4 15mb 12 9 9",breath:"5 brth 0 1 16",caesura:"5 caes 0 1 20",short:"5 short 0 1 16",tick:"5 tick 0 1 16",coda:"5 coda 22,5 10 10",dacapo:"5 dacs 16 20 20 Da Capo",dacoda:"5 dacs 16 20 20 Da Coda","D.C.":"5 dcap 16,3 6 6","D.S.":"5 dsgn 16,3 6 6","D.C.alcoda":"5 dacs 16 32 32 D.C. al Coda","D.S.alcoda":"5 dacs 16 32 32 D.S. al Coda","D.C.alfine":"5 dacs 16 32 32 D.C. al Fine","D.S.alfine":"5 dacs 16 32 32 D.S. al Fine",fermata:"5 hld 12 7.5 7.5",fine:"5 dacs 16 12 12 Fine",invertedfermata:"7 hld 12 8 8",segno:"5 sgno 22,2 5 5",f:"6 f 12,5 3 4",ff:"6 ff 12,5 8 5",fff:"6 fff 12,5 11 9",ffff:"6 ffff 12,5 15 12",mf:"6 mf 12,5 8 10",mp:"6 mp 12,5 9 10",p:"6 p 12,5 3 6",pp:"6 pp 12,5 8 9",ppp:"6 ppp 12,5 14 11",pppp:"6 pppp 12,5 14 17",pralltriller:"3 umrd 6,5 4 6",sfz:"6 sfz 12,5 9 9",ped:"6 ped 9 6 10","ped-up":"6 pedoff 9 4 4","ped(":"7 lped 14 1 1","ped)":"7 lped 14 1 1","crescendo(":"6 cresc 15,2 0 0","crescendo)":"6 cresc 15,2 0 0","<(":"6 cresc 15,2 0 0","<)":"6 cresc 15,2 0 0","diminuendo(":"6 dim 15,2 0 0","diminuendo)":"6 dim 15,2 0 0",">(":"6 dim 15,2 0 0",">)":"6 dim 15,2 0 0","-(":"8 gliss 0 0 0","-)":"8 gliss 0 0 0","~(":"8 glisq 0 0 0","~)":"8 glisq 0 0 0",invisible:"32 0 0 0 0",beamon:"33 0 0 0 0",trem1:"34 0 0 0 0",trem2:"34 0 0 0 0",trem3:"34 0 0 0 0",trem4:"34 0 0 0 0",xstem:"35 0 0 0 0",beambr1:"36 0 0 0 0",beambr2:"36 0 0 0 0",rbstop:"37 0 0 0 0","/":"38 0 0 6 6","//":"38 0 0 6 6","///":"38 0 0 6 6","beam-accel":"39 0 0 0 0","beam-rall":"39 0 0 0 0",stemless:"40 0 0 0 0",rbend:"41 0 0 0 0",editorial:"42 0 0 0 0","sacc-1":"3 sacc-1 6,4 4 4",sacc3:"3 sacc3 6,5 4 4",sacc1:"3 sacc1 6,4 4 4",courtesy:"43 0 0 0 0","cacc-1":"3 cacc-1 0 16 0",cacc3:"3 cacc3 0 16 0",cacc1:"3 cacc1 0 16 0","tie(":"44 0 0 0 0","tie)":"44 0 0 0 0",fg:"45 0 0 0 0"},f_near=[d_near,d_slide,d_arp],f_note=[null,null,null,null,d_upstaff],f_staff=[null,null,null,d_upstaff,null,d_upstaff,d_upstaff,d_upstaff]
+var decos={dot:"0 stc 6 .7 1",tenuto:"0 emb 6 4 3",slide:"1 sld 5,5 7 1",arpeggio:"2 arp 12 10 3",roll:"3 roll 5,4 5 6",lowermordent:"3 lmrd 6,5 4 6",uppermordent:"3 umrd 6,5 4 6",trill:"3 trl 14 5 8",upbow:"3 upb 12,2 3 7",downbow:"3 dnb 8,2 4 6",gmark:"3 grm 7 4 6",wedge:"0 wedge 8 1.5 1",longphrase:"5 lphr 0 1 16",mediumphrase:"5 mphr 0 1 16",shortphrase:"5 sphr 0 1 16",turnx:"3 turnx 7,2.5 5 6",invertedturn:"3 turn 7,2 5 6",plus:"3 dplus 8,2 2 4","+":"3 dplus 8,2 2 4",">":"3 accent 3.5,3.5 4 4",accent:"3 accent 3.5,3.5 4 4",emphasis:"3 accent 3.5,3.5 4 4",marcato:"3 marcato 9 5 5","^":"3 marcato 9 5 5",mordent:"3 lmrd 6,5 4 6",open:"3 opend 8 3 3",snap:"3 snap 10 3 3",thumb:"3 thumb 10 3 3",turn:"3 turn 7,2.5 5 6","trill(":"5 ltr 8 0 0","trill)":"5 ltr 8 0 0","8va(":"5 8va 12 6 6","8va)":"5 8va 12 6 6","8vb(":"4 8vb 10,5 6 6","8vb)":"4 8vb 10,5 6 6","15ma(":"5 15ma 12 9 9","15ma)":"5 15ma 12 9 9","15mb(":"4 15mb 12 9 9","15mb)":"4 15mb 12 9 9",breath:"5 brth 0 1 16",caesura:"5 caes 0 1 20",short:"5 short 0 1 16",tick:"5 tick 0 1 16",coda:"5 coda 22,5 10 10",dacapo:"5 dacs 16 20 20 Da Capo",dacoda:"5 dacs 16 20 20 Da Coda","D.C.":"5 dcap 16,3 6 6","D.S.":"5 dsgn 16,3 6 6","D.C.alcoda":"5 dacs 16 32 32 D.C. al Coda","D.S.alcoda":"5 dacs 16 32 32 D.S. al Coda","D.C.alfine":"5 dacs 16 32 32 D.C. al Fine","D.S.alfine":"5 dacs 16 32 32 D.S. al Fine",fermata:"3 hld 12 7.5 7.5",fine:"5 dacs 16 12 12 Fine",invertedfermata:"4 hld 12 8 8",segno:"5 sgno 22,2 5 5",f:"6 f 12,5 3 4",ff:"6 ff 12,5 8 5",fff:"6 fff 12,5 11 9",ffff:"6 ffff 12,5 15 12",mf:"6 mf 12,5 8 10",mp:"6 mp 12,5 9 10",p:"6 p 12,5 3 6",pp:"6 pp 12,5 8 9",ppp:"6 ppp 12,5 14 11",pppp:"6 pppp 12,5 14 17",pralltriller:"3 umrd 6,5 4 6",sfz:"6 sfz 12,5 9 9",ped:"6 ped 9 6 10","ped-up":"6 pedoff 9 4 4","ped(":"7 lped 14 1 1","ped)":"7 lped 14 1 1","crescendo(":"6 cresc 15,2 0 0","crescendo)":"6 cresc 15,2 0 0","<(":"6 cresc 15,2 0 0","<)":"6 cresc 15,2 0 0","diminuendo(":"6 dim 15,2 0 0","diminuendo)":"6 dim 15,2 0 0",">(":"6 dim 15,2 0 0",">)":"6 dim 15,2 0 0","-(":"8 gliss 0 0 0","-)":"8 gliss 0 0 0","~(":"8 glisq 0 0 0","~)":"8 glisq 0 0 0",invisible:"32 0 0 0 0",beamon:"33 0 0 0 0",trem1:"34 0 0 0 0",trem2:"34 0 0 0 0",trem3:"34 0 0 0 0",trem4:"34 0 0 0 0",xstem:"35 0 0 0 0",beambr1:"36 0 0 0 0",beambr2:"36 0 0 0 0",rbstop:"37 0 0 0 0","/":"38 0 0 6 6","//":"38 0 0 6 6","///":"38 0 0 6 6","beam-accel":"39 0 0 0 0","beam-rall":"39 0 0 0 0",stemless:"40 0 0 0 0",rbend:"41 0 0 0 0",editorial:"42 0 0 0 0","sacc-1":"3 sacc-1 6,4 4 4",sacc3:"3 sacc3 6,5 4 4",sacc1:"3 sacc1 6,4 4 4",courtesy:"43 0 0 0 0","cacc-1":"3 cacc-1 0 16 0",cacc3:"3 cacc3 0 16 0",cacc1:"3 cacc1 0 16 0","tie(":"44 0 0 0 0","tie)":"44 0 0 0 0",fg:"45 0 0 0 0"},f_near=[d_near,d_slide,d_arp],f_note=[null,null,null,d_upstaff,d_upstaff],f_staff=[null,null,null,null,null,d_upstaff,d_upstaff,d_upstaff]
 function y_get(st,up,x,w){var y,p_staff=staff_tb[st],i=(x/2)|0,j=((x+w)/2)|0
 if(i<0){i=0
 if(j<0)
@@ -406,10 +406,6 @@ case 1:if(dd.glyph[0]=='|')
 s.decstm=dd.h
 case 2:if(!s.notes){error(1,s,errs.must_note_rest,nm)
 continue}
-break
-case 3:if(fg&&dd.glyph=="fng"){for(i=0;i<=5;i++){decos[i.toString()]="5 fng 5,5 3 3 "+i
-if(dd_tb[i.toString()])
-dd_tb[i.toString()].func=5}}
 break
 case 4:case 5:i=nm.match(/1?[85]([vm])([ab])([()])/)
 if(i){j=i[1]=='v'?1:2
@@ -2304,7 +2300,6 @@ y_set(s.st,true,s.x-10,10,y)}
 if(s.notes[0].acc){y=3*(s.notes[0].pit-18)
 -(s.notes[0].acc==-1?5:10)
 y_set(s.st,false,s.x-10,10,y)}}
-draw_deco_note()
 for(v=0;v<voice_tb.length;v++){p_voice=voice_tb[v];s=p_voice.sym
 if(!s)
 continue
@@ -2321,7 +2316,8 @@ p_st.top[i]=top
 if(bot<p_st.bot[i])
 p_st.bot[i]=bot}}
 if(cfmt.measurenb>=0)
-draw_measnb();set_dscale(-1)
+draw_measnb();draw_deco_note()
+set_dscale(-1)
 for(v=0;v<voice_tb.length;v++){p_voice=voice_tb[v]
 if(p_voice.have_ly){draw_all_lyrics()
 break}}
@@ -10296,4 +10292,4 @@ this.nreq++
 abc2svg.loadjs(fn+"-1.js",load_end,function(){abc2svg.modules.errmsg('Error loading the module '+fn)
 load_end()})}
 return this.nreq==nreq_i}}
-abc2svg.version="v1.23.0";abc2svg.vdate="2026-03-18"
+abc2svg.version="v1.23.1";abc2svg.vdate="2026-04-18"

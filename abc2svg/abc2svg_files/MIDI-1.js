@@ -78,7 +78,9 @@ s.prev.next=null}
 if(!cfmt.drum)
 cfmt.drum={}
 break
-case"gchord":case"gchordbars":case"gchordon":case"gchordoff":if(!cfmt.chord)
+case"gchord":case"gchordbars":case"gchordon":case"gchordoff":if(a[1].length==6&&!/^[0-9bcf-kG-Kz+]+$/.test(a[2])){abc.syntax(1,abc.errs.bad_val,"%%MIDI gchord")
+break}
+if(!cfmt.chord)
 cfmt.chord={}
 if(parse.state>=2&&curvoice){s=abc.new_block("midigch")
 s.play=s.invis=1
