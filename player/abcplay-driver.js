@@ -158,6 +158,7 @@
     _resumeGen:  0,     // 世代號，防止快速 pause/resume race condition
     _nextContAt: null,  // play_cont 下一次絕對觸發時間（pause 快照）
     _pausedOnnotes: [], // pause 時存下的 onnote on/off 列表（resume 重排用）
+    _pausedOnend: null, // pause 時若 onend 已排程，保存 {repv,at} 供 resume 重排
 
     // ── Player → UI callbacks（由 setUICallbacks() 填入）────────────
     // 預設空函式，確保未初始化時不爆錯。
@@ -327,6 +328,19 @@
     for (var i = 0; i < syms.length; i++) {
       if (syms[i]) return syms[i];
     }
+  }
+
+  /**
+   * clearOnendTimer(po) - 取消 po._onendTimer（play_cont 排程的 onend setTimeout）。
+   *
+   * po._onendTimer 由 hook-bridge play_cont 設定，timer ID 之前從未保存，
+   * 導致 AB loop / Back 後舊 session 的 onend 仍會在未來某時點觸發。
+   * playStart() 每次起新 session 前呼叫此函式，確保舊 onend 不再觸發。
+   */
+  function clearOnendTimer(po) {
+    if (!po || !po._onendTimer) return;
+    clearTimeout(po._onendTimer);
+    po._onendTimer = null;
   }
 
   /**
@@ -720,10 +734,13 @@
    *
    * 1. ac.suspend()       — 凍結 WebAudio 時鐘；已排進佇列的 Buffer Source 暫停發聲
    * 2. clearTimeout       — 清除 po.timouts（play_cont reschedule）
+   *                         清除 po._onendTimer（play_cont 到達 s_end 後排的 onend）
    *                         清除 po._onnoteTimouts（onnote on/off）
    * 3. _nextContAt        — 記錄 play_cont 原本應觸發的絕對時間，resume 時重排
-   * 4. _pausedOnnotes     — 存下尚未觸發的 onnote on/off（at > nowAc），resume 時重排
-   * 5. 高亮               — clearAllHighlight() 清殘留，setNoteOp(lastNote) 補亮暫停位置
+   * 4. _pausedOnend       — 若 onend 已排程（play_cont 已到達 s_end），保存 {repv,at}
+   *                         resume 時直接重排 onend，不走 play_cont（否則立刻觸發循環）
+   * 5. _pausedOnnotes     — 存下尚未觸發的 onnote on/off，resume 時重排
+   * 6. 高亮               — clearAllHighlight() 清殘留，setNoteOp(lastNote) 補亮暫停位置
    *
    * po.stim / po.s_cur / po.repv / po.repn / anchor 狀態完全不動。
    */
@@ -747,6 +764,15 @@
     // 清除 play_cont reschedule
     po.timouts.forEach(function(id) { clearTimeout(id); });
     po.timouts = [];
+
+    // 清除 onend timer；若已排程（play_cont 已到達 s_end），保存以供 resume 重排
+    if (po._onendTimer) {
+      clearTimeout(po._onendTimer);
+      play._pausedOnend = { repv: po.repv, at: po._onendAt || 0 };
+      po._onendTimer = null;
+    } else {
+      play._pausedOnend = null;
+    }
 
     // 清除 onnote on/off，存下全部 entry 供 resume 重排
     // 不在此用 e.at > nowAc 過濾：高速播放接近曲尾時 nowAc 誤判範圍大，
@@ -793,7 +819,10 @@
    * 2. clearAllHighlight() — 清除 pause 補亮的 lastNote
    * 3. ac.resume()        — 恢復 WebAudio 時鐘；已凍結的 Buffer Source 自動接續
    * 4. 重排 onnote on/off — 用 at - ac.currentTime 算剩餘 delay，重新 setTimeout
-   * 5. 重排 play_cont     — 用 _nextContAt 算剩餘 delay，重新 setTimeout
+   * 5. 重排 onend 或 play_cont（二擇一）：
+   *      _pausedOnend 存在：play_cont 已到達 s_end，直接重排 onend；
+   *                         不走 play_cont（否則立刻觸發循環，誤以為自然結束）
+   *      _pausedOnend 為 null：重排 play_cont，用 _nextContAt 算剩餘 delay
    *
    * po.s_cur / po.stim / repv / repn / anchor 完全不動，無丟失，無重疊。
    */
@@ -838,12 +867,23 @@
         play._pausedOnnotes = [];
       }
 
-      // 重排 play_cont reschedule
-      var delay = 0;
-      if (play._nextContAt !== null && play._nextContAt !== undefined)
-        delay = Math.max(0, (play._nextContAt - ac.currentTime) * 1000);
-      play._nextContAt = null;
-      po.timouts.push(setTimeout(po._play_cont, delay, po));
+      // 重排 play_cont 或 onend（取決於 pause 前是否已到達 s_end）
+      var _pausedOnend = play._pausedOnend;
+      play._pausedOnend = null;
+      if (_pausedOnend) {
+        // pause 前 play_cont 已排 onend（已到達 s_end）：直接重排 onend，不走 play_cont
+        var onendDelay = Math.max(0, (_pausedOnend.at - ac.currentTime) * 1000);
+        po._onendTimer = setTimeout(po.onend, onendDelay, _pausedOnend.repv);
+        po._onendAt = _pausedOnend.at;
+        play._nextContAt = null;
+      } else {
+        // play_cont 尚未到達 s_end：重排 play_cont
+        var delay = 0;
+        if (play._nextContAt !== null && play._nextContAt !== undefined)
+          delay = Math.max(0, (play._nextContAt - ac.currentTime) * 1000);
+        play._nextContAt = null;
+        po.timouts.push(setTimeout(po._play_cont, delay, po));
+      }
 
       // ── [ball:resume] ─────────────────────────────────────────
       if (root.BallController) root.BallController.onResume();
@@ -1074,6 +1114,18 @@
     if (!si) return;
     // 新播放開始時，確保清除任何殘留的 paused 狀態（_pausedPo = null 表示 not paused）
     play._pausedPo = null;
+    // 清除舊 session 殘留的 onnote timers 與 onend timer
+    var _oldPo = abc2svg._current_po;
+    clearOnnoteTimouts(_oldPo);
+    clearOnendTimer(_oldPo);    // 取消舊 session 的 onend 延遲計時器，防止殭屍觸發
+    // AB loop 路徑（onPlaybackEnd PLAYING→playStart 直跳）未經 stopPlay()，
+    // 舊 po 的 WebAudio GainNode 仍掛在 graph 發聲；補停，防止新舊 po 同時發聲。
+    // !po.stop 區分路徑：stopPlay() 已設 po.stop=true → 跳過，避免重複 stop。
+    // po.onend 暫設 null，防止 _backend.stop() 觸發 onPlaybackEnd 再入。
+    if (_oldPo && !_oldPo.stop) {
+      _oldPo.onend = null;
+      _backend.stop();
+    }
     // resume 時 anchor 狀態存在 sym 節點上，stop 後仍存活，不需要 reset jumpCtx
     JumpEngine.resetAllContexts();
 

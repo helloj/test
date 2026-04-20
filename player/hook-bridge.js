@@ -37,9 +37,12 @@
  *     [B2]              play_cont 內層 while：中途遇到 anchor 時跳轉
  *                       + DC/DS 落在 tuneStart/segno → rep.onDCDSLanding()
  *     [repv-on-enter]   已整合至 [repCtrl]（rep_s 段改由 rep.enterVolta 代理）
- *     [pause:reset-timouts]  po.timouts=[] 之後，重置 po._onnoteTimouts
+ *     [pause:reset-timouts]  po.timouts=[] 之後，重置 po._onnoteTimouts / _onendTimer / _onendAt
  *     [pause:track-onnote]   onnote on/off setTimeout 改存入 po._onnoteTimouts
  *     [pause:save-refs]      play_cont 排程前記錄 po._nextT；結尾存 po._play_cont
+ *     [onendTimer]           所有 setTimeout(po.onend,...) 改存 ID 至 po._onendTimer，
+ *                            同步記錄觸發絕對時間至 po._onendAt（ac.currentTime 單位）；
+ *                            pausePlay 可取消，resumePlay 可重排，不再有殭屍 onend
  *     [ball:meta]            填入 po._ballMeta[i] = { durMs, nextIstart, isJump }
  *                            nextIstart 由 _findNextMeta(s, rep, ctx) 查找
  *                            第一個音符時直接呼叫 BallController.onPlayStart（需要 st）
@@ -451,14 +454,22 @@
           //   清乾淨後靜默退出，不觸發任何副作用。
           if(po._gen === undefined){
             po._gen = _playGeneration;
+            if(typeof console !== 'undefined' && console.log)
+              console.log('[GEN] 綁定世代 gen=' + po._gen + ' si=' + (po.s_cur && po.s_cur.istart));
           }
           if(po._gen !== _playGeneration){
+            if(typeof console !== 'undefined' && console.log)
+              console.log('[GEN] 殭屍排程攔截 po.gen=' + po._gen + ' cur=' + _playGeneration +
+                          ' timouts=' + po.timouts.length +
+                          ' onnote=' + (po._onnoteTimouts ? po._onnoteTimouts.length : 0) +
+                          ' onend=' + (po._onendTimer ? 1 : 0));
             po.timouts.forEach(function(id){ clearTimeout(id); });
             po.timouts = [];
             if(po._onnoteTimouts){
               po._onnoteTimouts.forEach(function(e){ clearTimeout(e.id); });
               po._onnoteTimouts = [];
             }
+            if(po._onendTimer){ clearTimeout(po._onendTimer); po._onendTimer=null; }
             return;
           }
           // ── [GEN] end ─────────────────────────────────────────────
@@ -501,6 +512,9 @@
           // po._onnoteTimouts 存下剩餘 delay 供 resume 重排。
           po._onnoteTimouts=[]
           // ── [pause:reset-timouts] end ────────────────────────────
+          // ── [onendTimer] 每批重置；舊 timer 若未 clear 則殭屍觸發 onend ──
+          po._onendTimer=null
+          po._onendAt=null
 
           while(1){switch(s.type){case C.BAR:s2=null
             // ── [repCtrl] case C.BAR repeat/volta 判斷 ───────────
@@ -540,11 +554,11 @@
               //   由外層 case C.BAR 的 break 結束後重新計算 t）。
               if(s._anchor){
                 var _wv=JumpEngine.walkAnchors(s,ctx,po.conf.speed)
-                if(!_wv.target){if(po.onend)setTimeout(po.onend,(t-now)*1000,po.repv);po.s_cur=s;return}
+                if(!_wv.target){if(po.onend){po._onendTimer=setTimeout(po.onend,(t-now)*1000,po.repv);po._onendAt=t;}po.s_cur=s;return}
                 if(_wv.stimDelta!==0) po.stim+=_wv.stimDelta
                 s=_wv.target
                 if(s._tuneStartAnchor||s._segnoAnchor){rep.onDCDSLanding()}
-                if(s==po.s_end){if(po.onend)setTimeout(po.onend,(t-now)*1000,po.repv);po.s_cur=s;return}
+                if(s==po.s_end){if(po.onend){po._onendTimer=setTimeout(po.onend,(t-now)*1000,po.repv);po._onendAt=t;}po.s_cur=s;return}
                 po.s_cur=s}
               // ── [anchor-on-volta] end ────────────────────────────
               t=po.stim+s.ptim/po.conf.speed
@@ -614,7 +628,7 @@
 
               break}}
           while(1){if(!s||s==po.s_end||!s.ts_next||s.ts_next==po.s_end||po.stop){if(po.onend)
-              setTimeout(po.onend,(t-now+d)*1000,po.repv)
+              {po._onendTimer=setTimeout(po.onend,(t-now+d)*1000,po.repv);po._onendAt=t+d;}
               po.s_cur=s
               return}
             s=s.ts_next
@@ -633,7 +647,7 @@
             //   setTimeout delay = (t_new - now) * 1000 - 300，與外層排程邏輯一致。
             if(s._anchor){
               var _w2=JumpEngine.walkAnchors(s,ctx,po.conf.speed)
-              if(!_w2.target){if(po.onend)setTimeout(po.onend,(t-now+d)*1000,po.repv);po.s_cur=s;return}
+              if(!_w2.target){if(po.onend){po._onendTimer=setTimeout(po.onend,(t-now+d)*1000,po.repv);po._onendAt=t+d;}po.s_cur=s;return}
               s=_w2.target
               if(s._tuneStartAnchor||s._segnoAnchor){rep.onDCDSLanding()}
               if(_w2.stimDelta===0){
