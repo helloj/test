@@ -169,11 +169,17 @@
         ".tune-block p{margin:0 0 6px;font-size:.88rem;color:#444;white-space:pre-wrap;font-family:monospace}",
         ".tune-svg svg,.tune-block svg{display:block;width:100%;height:auto}",
         /* 調速面板：底部 sheet，仿 YouTube 風格 */
-        "#speed-panel{position:fixed;bottom:0;left:0;right:0;z-index:300;display:flex;justify-content:center;pointer-events:none;transform:translateY(100%);transition:transform .22s cubic-bezier(.4,0,.2,1)}",
+        "#speed-panel{position:fixed;bottom:20px;left:0;right:0;z-index:300;display:flex;justify-content:center;pointer-events:none;transform:translateY(calc(100% + 100px));transition:transform .22s cubic-bezier(.4,0,.2,1)}",
+        /* 僅在「直屏」時判斷比例 */
+        /* 直屏平板 (如 iPad 16:10 豎拿, 比例 > 1.4): 50px */
+        "@media (orientation: portrait) and (max-aspect-ratio: 10/14){ #speed-panel{bottom:50px} }",
+        /* 直屏手機 (如 18:9 以上窄長手機, 比例 > 1.85): 80px */
+        "@media (orientation: portrait) and (max-aspect-ratio: 10/185){ #speed-panel{bottom:80px} }",
         "#speed-panel.open{transform:translateY(0)}",
-        "#speed-panel-inner{pointer-events:all;width:100%;max-width:87%;background:var(--panel-solid);border:1px solid var(--muted);border-radius:16px 16px 0 0;box-shadow:0 -4px 24px rgba(26,18,11,0.18);padding:8px 0 0;margin:0 12px}",
+        "#speed-panel-inner{pointer-events:all;width:100%;max-width:87%;background:var(--panel-solid);border:1px solid var(--muted);border-radius:16px;box-shadow:0 8px 32px rgba(26,18,11,0.22);padding:8px 0 0;margin:0 12px}",
         /* 頂部拖曳把手（仿 iOS/Android sheet）*/
-        "#speed-handle{width:36px;height:4px;border-radius:2px;background:var(--muted);opacity:.5;margin:0 auto 16px}",
+        "#speed-handle{width:40px;height:5px;border-radius:3px;background:var(--muted);opacity:.3;margin:0 auto 12px;cursor:pointer}",
+        "#speed-handle:hover{opacity:.6}",
         "#speed-display{text-align:center;font-size:1.8rem;font-weight:700;color:var(--ink);margin-bottom:20px;letter-spacing:.02em}",
         "#speed-slider-row{display:flex;align-items:center;gap:14px;margin:0 20px 18px}",
         "#speed-minus,#speed-plus{flex-shrink:0;width:2.2em;height:2.2em;border:1px solid var(--muted);border-radius:50%;background:transparent;color:var(--ink);font-size:1.2rem;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:background .12s}",
@@ -809,7 +815,6 @@
      * _setupSpeedPanel()
      *
      * 綁定調速面板所有互動：開關、滑桿、+/-、預設按鈕。
-     * 在 init() 內呼叫（DOM 已存在）。
      */
     _setupSpeedPanel: function () {
       var CFG      = _cfg.CFG;
@@ -858,6 +863,13 @@
         panel.classList.remove('open');
         speedBtn.classList.remove('active');
       }
+
+      // ── 點擊橫棒收起 ──────────────────────────────────────────────
+      var handle = document.getElementById('speed-handle');
+      handle.addEventListener('click', function (e) {
+        e.stopPropagation();
+        closePanel();
+      });
 
       // ── 速度 icon 按鈕：toggle panel ──────────────────────────────
       speedBtn.addEventListener('click', function (e) {
